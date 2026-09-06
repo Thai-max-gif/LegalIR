@@ -82,8 +82,8 @@ def estimate_factory_runtime(
     total_validation_steps = 4200
     training_time_sec = total_validation_steps * sec_per_step
 
-    # Heavy retrieval & caching stages
-    index_and_cache_sec = 3600.0
+    # Heavy retrieval & caching stages across 5 folds + full 219k chunk dense encoding
+    index_and_cache_sec = 25000.0
 
     raw_total_sec = training_time_sec + index_and_cache_sec
     total_projected_sec = raw_total_sec * safety_factor

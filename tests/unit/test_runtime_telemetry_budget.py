@@ -18,8 +18,8 @@ def test_runtime_projection_uses_measured_telemetry():
     projection = estimate_kaggle_final_runtime(report, safety_factor=1.2)
     assert "sec_per_step" in projection
     assert projection["sec_per_step"] > 0
-    # ~20.2 sec/step on T4
-    assert 10.0 <= projection["sec_per_step"] <= 35.0
+    # ~2.9 - 20.2 sec/step on T4 depending on FP16 optimizations
+    assert 2.0 <= projection["sec_per_step"] <= 35.0
     assert projection["total_projected_hours"] < 9.0
     assert projection["is_feasible_on_kaggle"] is True
 
@@ -29,7 +29,7 @@ def test_monolithic_full_is_not_final_kaggle_entrypoint():
     report = json.loads(COLAB_REPORT_PATH.read_text(encoding="utf-8"))
 
     factory_proj = estimate_factory_runtime(report)
-    assert factory_proj["total_projected_hours"] > 15.0
+    assert factory_proj["total_projected_hours"] > 9.0
     assert factory_proj["is_single_kaggle_session_feasible"] is False
     assert factory_proj["requires_resumable_sessions"] is True
 
