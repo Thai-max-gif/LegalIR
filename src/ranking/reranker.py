@@ -133,12 +133,17 @@ class CrossEncoderReranker:
                     max_position_embeddings=128,
                     num_labels=1,
                 )
-                self.model = BertForSequenceClassification(config)
+                base_model = BertForSequenceClassification(config)
                 tmp_vocab = Path(tempfile.gettempdir()) / "mock_vocab.txt"
                 if not tmp_vocab.exists():
                     vocab_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + [f"tok_{i}" for i in range(295)]
                     tmp_vocab.write_text("\n".join(vocab_tokens) + "\n", encoding="utf-8")
                 self.tokenizer = BertTokenizerFast(vocab_file=str(tmp_vocab))
+                from peft import PeftModel
+                try:
+                    self.model = PeftModel.from_pretrained(base_model, str(adapter_dir), **load_kwargs)
+                except Exception:
+                    self.model = base_model
             else:
                 try:
                     self.tokenizer = AutoTokenizer.from_pretrained(str(adapter_dir), **load_kwargs)

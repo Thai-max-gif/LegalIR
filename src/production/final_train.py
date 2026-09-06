@@ -84,8 +84,20 @@ def train_final_adapter(
     print(f"[*] Final training on {num_pairs} pairs ({unique_qids} unique queries, {pos_count} pos, {neg_count} neg) ...")
 
     if mock_run:
-        (out_dir / "adapter_config.json").write_text('{"peft_type": "LORA", "base_model_name_or_path": "mock"}', encoding="utf-8")
-        (out_dir / "adapter_model.bin").write_text("mock_weights", encoding="utf-8")
+        from transformers import BertConfig, BertForSequenceClassification
+        from src.models.peft_reranker import setup_peft_model
+        config = BertConfig(
+            vocab_size=300,
+            hidden_size=32,
+            num_attention_heads=2,
+            num_hidden_layers=2,
+            intermediate_size=64,
+            max_position_embeddings=128,
+            num_labels=1,
+        )
+        bm = BertForSequenceClassification(config)
+        pm, _ = setup_peft_model(bm, lora_r=8, lora_alpha=16)
+        pm.save_pretrained(str(out_dir))
 
         adapter_hash = sha256_directory(out_dir)
         training_report = {
