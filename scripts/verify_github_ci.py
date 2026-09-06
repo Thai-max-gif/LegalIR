@@ -18,8 +18,9 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
-DEFAULT_REPO = "silent9669/LegalIR"
-WORKFLOW_NAME = "LegalIR CI"
+from src.release.provenance import check_github_ci_run, DEFAULT_REPO, DEFAULT_WORKFLOW_NAME
+
+WORKFLOW_NAME = DEFAULT_WORKFLOW_NAME
 
 
 def check_ci_status(
@@ -122,6 +123,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Verify that GitHub CI is GREEN for a given commit SHA.")
     parser.add_argument("--repo", type=str, default=DEFAULT_REPO, help=f"GitHub repo (default: {DEFAULT_REPO})")
     parser.add_argument("--sha", type=str, required=True, help="Target commit SHA (40 hex chars)")
+    parser.add_argument("--run-id", type=str, default=None, help="Optional specific GitHub Actions run ID to verify")
     parser.add_argument("--token", type=str, default=None, help="GitHub Personal Access Token (optional)")
     args = parser.parse_args()
 
@@ -129,10 +131,15 @@ def main() -> int:
     print("LegalIR CI Status Verification Gate")
     print(f"  • Repo      : {args.repo}")
     print(f"  • Target SHA: {args.sha}")
+    if args.run_id:
+        print(f"  • Run ID    : {args.run_id}")
     print(f"  • Workflow  : {WORKFLOW_NAME}")
     print("=================================================================")
 
-    is_green, msg = check_ci_status(repo=args.repo, sha=args.sha, token=args.token)
+    if args.run_id:
+        is_green, msg = check_github_ci_run(run_id=args.run_id, expected_runtime_sha=args.sha, repo=args.repo, token=args.token)
+    else:
+        is_green, msg = check_ci_status(repo=args.repo, sha=args.sha, token=args.token)
     print(msg)
 
     if is_green:

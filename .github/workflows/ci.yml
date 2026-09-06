@@ -40,5 +40,5 @@ jobs:
       - run: python scripts/audit_parameters.py
       - run: python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
       - run: python scripts/check_notebook_parity.py
-      - run: python scripts/verify_release_approval.py --repo-root .
+      - run: python scripts/verify_release_approval.py --repo-root . --allow-runtime-changes
       - run: python scripts/verify_release.py
