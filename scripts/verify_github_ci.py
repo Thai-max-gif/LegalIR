@@ -16,7 +16,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from src.release.provenance import check_github_ci_run, DEFAULT_REPO, DEFAULT_WORKFLOW_NAME
 
