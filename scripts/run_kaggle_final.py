@@ -21,7 +21,7 @@ from src.bundle.verifier import verify_production_bundle
 from src.core.memory import check_memory_guard, release_memory, take_memory_snapshot, format_memory_report
 from src.data.canonical import verify_canonical_dataset
 from src.production.final_train import train_final_adapter
-from src.production.public_rerank import rerank_and_fuse_public_predictions
+from src.production.public_rerank import normalize_public_queries, rerank_and_fuse_public_predictions
 from src.production.submission import package_submission, validate_submission
 
 
@@ -82,14 +82,20 @@ def main():
     evidence_p = bundle_p / "public_evidence.parquet"
 
     with open(dataset_p / "public-official.json", "r", encoding="utf-8") as f:
-        public_dict = json.load(f)
-    expected_qids = set(str(k) for k in public_dict.keys())
+        raw_public_dict = json.load(f)
+    public_dict = normalize_public_queries(raw_public_dict)
+    expected_qids = set(public_dict.keys())
+
+    fusion_p = bundle_p / "fusion_model.json"
+    if not fusion_p.is_file():
+        fusion_p = bundle_p / "fusion" / "fusion_model.json"
 
     predictions = rerank_and_fuse_public_predictions(
         public_candidates_path=cands_p,
         production_lock_path=lock_p,
         adapter_dir=adapter_out,
         public_evidence_path=evidence_p if evidence_p.is_file() else None,
+        fusion_model_path=fusion_p if fusion_p.is_file() else None,
         top_k=5,
         public_queries_dict=public_dict,
     )
