@@ -262,6 +262,11 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
                 "language": "python",
                 "sourceType": "notebook"
             },
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3"
+            },
             "language_info": {"name": "python", "version": "3.10.12"}
         },
         "nbformat": 4,
