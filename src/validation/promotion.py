@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from src.core.hashing import sha256_string
+
+HEX_40_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
+HEX_64_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
 
 
 def compare_score_promotion(
@@ -61,10 +65,24 @@ def create_production_lock(
     config: Dict[str, Any],
     runtime_commit: str,
     dataset_sha256: str = "canonical_v2",
+    strict: bool = False,
 ) -> None:
     """Freeze the approved production configuration into an immutable production_lock.json."""
     output_p = Path(output_path)
     output_p.parent.mkdir(parents=True, exist_ok=True)
+
+    runtime_commit = str(runtime_commit).strip()
+    dataset_sha256 = str(dataset_sha256).strip()
+
+    if strict:
+        if not HEX_40_RE.match(runtime_commit):
+            raise ValueError(
+                f"runtime_commit must be a real 40-char git commit SHA, got: '{runtime_commit}'"
+            )
+        if not HEX_64_RE.match(dataset_sha256):
+            raise ValueError(
+                f"dataset_sha256 must be a real 64-char SHA-256 digest, got: '{dataset_sha256}'"
+            )
 
     config_str = json.dumps(config, sort_keys=True)
     lock_data = {

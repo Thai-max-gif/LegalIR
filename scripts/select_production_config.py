@@ -18,7 +18,8 @@ def main():
     parser.add_argument("--folds-dir", type=str, default="artifacts/factory/folds", help="Path to folds directory")
     parser.add_argument("--fusion-descriptor", type=str, default="artifacts/factory/fusion/fusion_model.json", help="Path to fusion_model.json descriptor")
     parser.add_argument("--output-lock", type=str, default="artifacts/factory/production_lock.json", help="Path to output lock")
-    parser.add_argument("--runtime-commit", type=str, default="a0efb25", help="Approved runtime git commit SHA")
+    parser.add_argument("--runtime-commit", type=str, required=True, help="Approved runtime 40-char git commit SHA")
+    parser.add_argument("--dataset-fingerprint", type=str, required=True, help="Canonical dataset 64-char SHA256 digest")
     args = parser.parse_args()
 
     folds_root = Path(args.folds_dir)
@@ -91,6 +92,8 @@ def main():
         metrics=agg,
         config=approved_config,
         runtime_commit=args.runtime_commit,
+        dataset_sha256=args.dataset_fingerprint,
+        strict=True,
     )
 
     print(f"[+] Successfully locked production configuration to {args.output_lock}")
