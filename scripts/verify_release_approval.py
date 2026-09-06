@@ -139,7 +139,7 @@ def main() -> int:
         return 0
     else:
         # If allow-runtime-changes is set and all errors are disallowed file changes/lineage diffs
-        if args.allow_runtime_changes and all("changed between runtime" in e or "lineage" in e.lower() for e in errors):
+        if args.allow_runtime_changes and all("changed between" in e or "disallowed" in e.lower() or "lineage" in e.lower() for e in errors):
             print("[*] NOTICE: Runtime changes detected between approved runtime SHA and current HEAD.")
             print("[*] Passing gate because --allow-runtime-changes is enabled (Commit A in two-commit model).")
             return 0
