@@ -234,27 +234,15 @@ def test_stage_timing_telemetry_structure():
 
 
 def test_cold_start_projection_under_budget():
-    """Cold-start total seconds calculation fits within 10.8h (38,880s) budget."""
-    # 5-fold OOF (~3h) + final training (~1.5h) + doc disjoint (~0.5h) + public inference (~10m) + index build (~10m)
-    # Total ~ 5-6h < 10.8h
-    cold_start_stages = {
-        "canonical_load": 5.0,
-        "bm25_legal_build": 15.0,
-        "bm25_pyvi_build": 25.0,
-        "dense_build": 300.0,
-        "train_query_encoding": 60.0,
-        "oof_5fold_total": 5 * 1800.0,  # 9,000s
-        "fusion_training": 30.0,
-        "doc_disjoint_total": 2000.0,
-        "question_memory_build": 10.0,
-        "final_pair_mining": 60.0,
-        "final_reranker_training": 3600.0,
-        "public_inference": 600.0,
-        "validation_and_packaging": 5.0,
-    }
-    total_cold_start_sec = sum(cold_start_stages.values())
-    BUDGET_SECONDS = 12 * 3600 * 0.90  # 38,880s = 10.8h
-    assert total_cold_start_sec < BUDGET_SECONDS
+    """Kaggle Final runtime projection fits within 9h budget using measured hardware telemetry."""
+    from src.core.runtime_estimator import estimate_kaggle_final_runtime
+    colab_report_p = Path(__file__).resolve().parent.parent / "artifacts" / "task1" / "colab_smoke_report.json"
+    assert colab_report_p.is_file(), f"Missing {colab_report_p}"
+    telemetry = json.loads(colab_report_p.read_text(encoding="utf-8"))
+
+    proj = estimate_kaggle_final_runtime(telemetry, safety_factor=1.25, max_session_hours=9.0)
+    assert proj["is_feasible_on_kaggle"] is True
+    assert proj["total_projected_hours"] < 9.0
 
 
 # ==============================================================================
