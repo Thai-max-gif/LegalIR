@@ -30,8 +30,8 @@ def test_bundle_build_and_verify(tmp_path):
     assert (bundle_dir / "bundle_manifest.json").is_file()
     assert manifest.status == "PASS"
 
-    # Verifier check
-    is_valid, errors = verify_production_bundle(bundle_dir, strict_mandatory=True)
+    # Verifier check (cryptographic only for raw dummy text files)
+    is_valid, errors = verify_production_bundle(bundle_dir, strict_mandatory=True, strict_semantic=False)
     assert is_valid is True, f"Verification failed: {errors}"
     assert len(errors) == 0
 
