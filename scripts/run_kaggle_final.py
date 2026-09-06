@@ -71,7 +71,10 @@ def main():
     print("[*] Stage K3 & K4: Training final BGE+LoRA on all queries ...")
     pairs_p = bundle_p / "final_training_pairs.parquet"
     adapter_out = out_dir / "final_adapter"
-    train_report = train_final_adapter(pairs_p, adapter_out, runtime_config=reranker_cfg, mock_run=args.mock)
+    train_cfg = dict(reranker_cfg)
+    if not args.mock and "expected_query_count" not in train_cfg:
+        train_cfg["expected_query_count"] = 7000
+    train_report = train_final_adapter(pairs_p, adapter_out, runtime_config=train_cfg, mock_run=args.mock)
     if train_report.get("status") != "PASS":
         print("[!] Final training FAILED.")
         sys.exit(1)
