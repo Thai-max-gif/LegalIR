@@ -1,5 +1,5 @@
 {
-  "git_sha": "33a0930e7d1ca1ee58000efdc28a79cf7107b9bf",
+  "git_sha": "17829909630adcb3d46de1e0bc27e9a903d68749",
   "ci_workflow_name": "LegalIR CI",
   "ci_green": true,
   "gpu_name": "Tesla T4",
@@ -22,18 +22,18 @@
     "manifest_sha256": "d98c9727f17699d3a4dfdc473f1c3e6caa7e5fc3c1a9407570a9384377a4b90d",
     "public_sha256": "adaa250c5469a5ddb37c3875e0aa311cb4545f0a1710903a158b25d67b7f9d89"
   },
-  "subset_manifest_hash": "ab2bdf7c8a51a8443fcf2e137e77cb0ad5fd8ee83e6bb1e73a84c4b77285ce2a",
+  "subset_manifest_hash": "6cc8b2e96d1e99e54b8c70a17562b932b7bde353d89c62eab3c46a56b00baf97",
   "subset_counts": {
     "documents": 2000,
-    "chunks": 297404,
+    "chunks": 299802,
     "train_queries": 64,
     "val_queries": 32,
     "public_queries": 16,
-    "qrels": 102
+    "qrels": 107
   },
-  "split_provenance_sha": "57d8a6305f7e5004c0d239772623cb5558ad5b07d588f2b7c1abf77821219634",
+  "split_provenance_sha": "98a6b8208137f758b866052d3deafab80dd1b7abf64dc20e1872a85f5857efcf",
   "duplicate_blacklist": {
-    "source": "input",
+    "source": "repo",
     "count": 4,
     "valid": true,
     "excluded_duplicate_negative_count": 0
@@ -45,19 +45,19 @@
   "dense_embeddings_finite": true,
   "dense_telemetry": {
     "requested_batch_size": 16,
-    "min_successful_batch_size": 11,
-    "last_successful_batch_size": 11,
+    "min_successful_batch_size": 12,
+    "last_successful_batch_size": 12,
     "oom_events": 0,
-    "item_count": 55435,
-    "elapsed_seconds": 678.95
+    "item_count": 56828,
+    "elapsed_seconds": 656.29
   },
   "reranker_device": "cuda:0",
-  "reranker_peak_vram_mb": 3056.52,
+  "reranker_peak_vram_mb": 5342.11,
   "optimizer_steps": 10,
   "loss_finite": true,
-  "param_diff": 293.7609839560464,
+  "param_diff": 110.43863780423999,
   "adapter_verification": {
-    "file_sha256": "9750a9697e62de4202dae2523ee49297776f6031bea30ea67a0736b40b77032a",
+    "file_sha256": "8370aae7a0827dd3fbfa31df1b74ae4d282460261330d9d757ba098aa0b74d86",
     "manifest_sha256": "",
     "sha_match": true,
     "fresh_reload": true,
@@ -67,8 +67,8 @@
   "parameter_audit": {
     "dense_loaded_parameters": 134998272,
     "reranker_base_loaded_parameters": 567755777,
-    "adapter_parameters": 8128513,
-    "system_learned_parameters": 710882562,
+    "adapter_parameters": 2623489,
+    "system_learned_parameters": 705377538,
     "static_preflight_parameters": 702754049,
     "parameter_budget_compliant": true,
     "budget_limit": 4000000000
@@ -82,12 +82,12 @@
     "errors": []
   },
   "stage_timings": {
-    "preflight_and_subset_sec": 35.29,
-    "dense_macro_sec": 686.74,
-    "pair_mining_sec": 57.94,
-    "reranker_training_sec": 201.85,
-    "prediction_eval_sec": 12.48,
-    "total_wall_sec": 994.28
+    "preflight_and_subset_sec": 37.48,
+    "dense_macro_sec": 663.3,
+    "pair_mining_sec": 51.91,
+    "reranker_training_sec": 29.21,
+    "prediction_eval_sec": 10.5,
+    "total_wall_sec": 792.4
   },
   "result": "PASS"
 }
