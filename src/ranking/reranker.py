@@ -133,7 +133,7 @@ class CrossEncoderReranker:
                     max_position_embeddings=128,
                     num_labels=1,
                 )
-                base_model = BertForSequenceClassification(config)
+                self.model = BertForSequenceClassification(config)
                 tmp_vocab = Path(tempfile.gettempdir()) / "mock_vocab.txt"
                 if not tmp_vocab.exists():
                     vocab_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + [f"tok_{i}" for i in range(295)]
@@ -157,9 +157,9 @@ class CrossEncoderReranker:
                 except Exception as e:
                     raise RuntimeError(f"Failed to load real base model '{base_model_source}': {e}") from e
 
-            from peft import PeftModel
+                from peft import PeftModel
 
-            self.model = PeftModel.from_pretrained(base_model, str(adapter_dir), **load_kwargs)
+                self.model = PeftModel.from_pretrained(base_model, str(adapter_dir), **load_kwargs)
         elif self.model_name == "mock":
             import tempfile
             from transformers import BertConfig, BertForSequenceClassification, BertTokenizerFast

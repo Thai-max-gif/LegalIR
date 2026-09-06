@@ -170,7 +170,14 @@ class StaticCacheReader:
         records: List[StaticCandidateRecord] = []
         num_rows = len(data["query_id"])
 
+        best_chunks = data.get("best_chunk_id", [None] * num_rows)
+        second_scores = data.get("second_score", [None] * num_rows)
+        mean_scores = data.get("mean_score", [None] * num_rows)
+        extra_jsons = data.get("extra_json", [""] * num_rows)
+
         for i in range(num_rows):
+            sec_sc = second_scores[i]
+            mean_sc = mean_scores[i]
             records.append(
                 StaticCandidateRecord(
                     query_id=data["query_id"][i],
@@ -178,10 +185,10 @@ class StaticCacheReader:
                     rank=int(data["rank"][i]),
                     doc_id=data["doc_id"][i],
                     score=float(data["score"][i]),
-                    best_chunk_id=data["best_chunk_id"][i],
-                    second_score=float(data["second_score"][i]) if data["second_score"][i] is not None else None,
-                    mean_score=float(data["mean_score"][i]) if data["mean_score"][i] is not None else None,
-                    extra_json=data["extra_json"][i],
+                    best_chunk_id=best_chunks[i],
+                    second_score=float(sec_sc) if sec_sc is not None else None,
+                    mean_score=float(mean_sc) if mean_sc is not None else None,
+                    extra_json=extra_jsons[i],
                 )
             )
 

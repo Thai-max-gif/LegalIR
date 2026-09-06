@@ -84,7 +84,7 @@ def train_final_adapter(
     print(f"[*] Final training on {num_pairs} pairs ({unique_qids} unique queries, {pos_count} pos, {neg_count} neg) ...")
 
     if mock_run:
-        (out_dir / "adapter_config.json").write_text('{"peft_type": "LORA"}', encoding="utf-8")
+        (out_dir / "adapter_config.json").write_text('{"peft_type": "LORA", "base_model_name_or_path": "mock"}', encoding="utf-8")
         (out_dir / "adapter_model.bin").write_text("mock_weights", encoding="utf-8")
 
         adapter_hash = sha256_directory(out_dir)
