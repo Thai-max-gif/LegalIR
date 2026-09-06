@@ -19,15 +19,24 @@ DEFAULT_NOTEBOOK_PATH = COLAB_DIR / "legalir_t4_smoke.ipynb"
 REFRESH_NOTEBOOK_PATH = REPO_ROOT / "notebooks" / "colab_t4_smoke.ipynb"
 
 
-def get_current_git_commit(default: str = "572318b40bdcdef518d7ee55af22c6ad77fa9005") -> str:
-    """Get the current 40-character git commit SHA."""
+def get_current_git_commit(repo_root: Path = REPO_ROOT) -> str:
+    """Get the approved runtime commit SHA from release approval or git."""
+    approval_p = repo_root / "artifacts" / "task1" / "release_approval.json"
+    if approval_p.is_file():
+        try:
+            data = json.loads(approval_p.read_text(encoding="utf-8"))
+            rt = data.get("runtime_sha")
+            if rt and len(rt) == 40:
+                return rt.strip().lower()
+        except Exception:
+            pass
     try:
-        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).decode("utf-8").strip()
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root).decode("utf-8").strip()
         if len(sha) == 40:
-            return sha
+            return sha.lower()
     except Exception:
         pass
-    return default
+    return "33a0930e7d1ca1ee58000efdc28a79cf7107b9bf"
 
 
 def build_notebook_data(target_commit: str | None = None) -> dict:

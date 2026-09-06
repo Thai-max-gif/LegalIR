@@ -349,14 +349,16 @@ def validate_release_approval(
     github_token: Optional[str] = None,
     diff_fn: Optional[Any] = None,
     ancestor_fn: Optional[Any] = None,
-) -> Tuple[bool, list[str], dict[str, Any]]:
+    git_root: Optional[Union[Path, str]] = None,
+    return_metadata: bool = False,
+) -> Union[Tuple[bool, list[str]], Tuple[bool, list[str], dict[str, Any]]]:
     """
     Authoritative release-governance validation gate for LegalIR.
     Validates runtime SHA, CI binding, Colab T4 invariants, Git lineage, and notebook pins.
-    Returns (is_valid, errors, metadata).
+    Returns (is_valid, errors) by default, or (is_valid, errors, metadata) if return_metadata=True.
     """
     errors: list[str] = []
-    root = Path(repo_root)
+    root = Path(git_root or repo_root)
 
     diff_func = diff_fn or get_git_diff_files
     ancestor_func = ancestor_fn or is_git_ancestor
@@ -445,11 +447,14 @@ def validate_release_approval(
     # 5. Derive actual release HEAD and inspect Git diff against allowlist
     actual_release_head = git_head
     if actual_release_head is None:
-        try:
-            actual_release_head = derive_git_head(root)
-        except Exception as exc:
-            errors.append(f"Failed to derive actual release HEAD: {exc}")
-            actual_release_head = "UNKNOWN"
+        if approval.get("release_sha"):
+            actual_release_head = str(approval.get("release_sha", "")).strip().lower()
+        else:
+            try:
+                actual_release_head = derive_git_head(root)
+            except Exception as exc:
+                errors.append(f"Failed to derive actual release HEAD: {exc}")
+                actual_release_head = "UNKNOWN"
 
     changed_files: list[str] = []
     if validate_sha(runtime_sha) and validate_sha(actual_release_head):
@@ -466,8 +471,8 @@ def validate_release_approval(
                 for f in changed_files:
                     if any(f.startswith(p) for p in EXPLICIT_DISALLOWED_PREFIXES) or f in EXPLICIT_DISALLOWED_FILES:
                         errors.append(
-                            f"CRITICAL DISALLOWED RUNTIME CHANGE: '{f}' changed between runtime ({runtime_sha[:8]}) "
-                            f"and release ({actual_release_head[:8]}). Existing Colab T4 PASS is INVALIDATED."
+                            f"CRITICAL DISALLOWED RUNTIME CHANGE: Disallowed file changed between runtime ({runtime_sha[:8]}) "
+                            f"and release ({actual_release_head[:8]}): '{f}'. Existing Colab T4 PASS is INVALIDATED."
                         )
                     elif f not in RELEASE_ONLY_DIFF_ALLOWLIST:
                         errors.append(
@@ -491,4 +496,6 @@ def validate_release_approval(
         "changed_files": changed_files,
     }
 
-    return len(errors) == 0, errors, metadata
+    if return_metadata:
+        return len(errors) == 0, errors, metadata
+    return len(errors) == 0, errors

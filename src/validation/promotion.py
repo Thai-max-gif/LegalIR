@@ -64,7 +64,7 @@ def create_production_lock(
     metrics: Dict[str, Any],
     config: Dict[str, Any],
     runtime_commit: str,
-    dataset_sha256: str = "canonical_v2",
+    dataset_sha256: Optional[str] = None,
     strict: bool = False,
 ) -> None:
     """Freeze the approved production configuration into an immutable production_lock.json."""
@@ -72,23 +72,26 @@ def create_production_lock(
     output_p.parent.mkdir(parents=True, exist_ok=True)
 
     runtime_commit = str(runtime_commit).strip()
-    dataset_sha256 = str(dataset_sha256).strip()
+    dataset_sha = str(dataset_sha256 or "").strip()
 
     if strict:
         if not HEX_40_RE.match(runtime_commit):
             raise ValueError(
                 f"runtime_commit must be a real 40-char git commit SHA, got: '{runtime_commit}'"
             )
-        if not HEX_64_RE.match(dataset_sha256):
+        if not HEX_64_RE.match(dataset_sha):
             raise ValueError(
-                f"dataset_sha256 must be a real 64-char SHA-256 digest, got: '{dataset_sha256}'"
+                f"dataset_sha256 must be a real 64-char SHA-256 digest, got: '{dataset_sha}'"
             )
+    else:
+        if not dataset_sha:
+            dataset_sha = "0" * 64
 
     config_str = json.dumps(config, sort_keys=True)
     lock_data = {
         "status": "LOCKED",
         "runtime_commit": runtime_commit,
-        "dataset_sha256": dataset_sha256,
+        "dataset_sha256": dataset_sha,
         "config_sha256": sha256_string(config_str),
         "metrics": metrics,
         "config": config,

@@ -36,7 +36,7 @@ def test_release_rejects_ci_run_for_different_sha(tmp_path):
     }
 
     with patch("src.release.provenance.fetch_github_run", return_value=mock_response):
-        is_valid, errors, _ = validate_release_approval(
+        is_valid, errors = validate_release_approval(
             approval=approval,
             repo_root=tmp_path,
             verify_github_actions=True,
@@ -75,7 +75,7 @@ def test_release_rejects_failed_runtime_ci(tmp_path):
     }
 
     with patch("src.release.provenance.fetch_github_run", return_value=mock_response):
-        is_valid, errors, _ = validate_release_approval(
+        is_valid, errors = validate_release_approval(
             approval=approval,
             repo_root=tmp_path,
             verify_github_actions=True,
@@ -113,7 +113,7 @@ def test_release_rejects_wrong_workflow_name(tmp_path):
     }
 
     with patch("src.release.provenance.fetch_github_run", return_value=mock_response):
-        is_valid, errors, _ = validate_release_approval(
+        is_valid, errors = validate_release_approval(
             approval=approval,
             repo_root=tmp_path,
             verify_github_actions=True,
@@ -167,7 +167,7 @@ def test_release_accepts_runtime_A_release_only_B(tmp_path, monkeypatch):
     colab_report.write_text("{}", encoding="utf-8")
 
     with patch("src.release.provenance.fetch_github_run", return_value=mock_response):
-        is_valid, errors, _ = validate_release_approval(
+        is_valid, errors = validate_release_approval(
             approval=approval,
             repo_root=tmp_path,
             colab_report_path=colab_report,

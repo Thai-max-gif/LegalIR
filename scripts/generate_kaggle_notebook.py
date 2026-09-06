@@ -84,6 +84,8 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
             "print(f\"[+] Python Version : {sys.version.split()[0]}\")\n",
             "print(f\"[+] PyTorch Version: {torch.__version__}\")\n",
             "print(f\"[+] CUDA Available : {torch.cuda.is_available()}\")\n",
+            "RUN_MODE = os.environ.get(\"LEGALIR_RUN_MODE\", \"full\")  # 'full' or 'smoke'\n",
+            "print(f\"[*] Execution Run Mode: {RUN_MODE}\")\n",
             "if torch.cuda.is_available():\n",
             "    for i in range(torch.cuda.device_count()):\n",
             "        prop = torch.cuda.get_device_properties(i)\n",
@@ -115,6 +117,7 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
             "    Path(\"/kaggle/working\"),\n",
             "]\n",
             "\n",
+            f"# Pinned runtime: git checkout {commit_sha}\n",
             f"EXPECTED_COMMIT = os.environ.get(\"LEGALIR_COMMIT_SHA\", \"{commit_sha}\")\n",
             "REPO_ROOT = None\n",
             "for p in possible_repo_paths:\n",
@@ -176,8 +179,12 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
         "outputs": [],
         "source": [
             "# ==============================================================================\n",
-            "# Cell 3: Execute Kaggle Final Production Runner (run_kaggle_final.py)\n",
+            "# Cell 3: Canonical Dataset Discovery & Preflight Metadata Check (pq.ParquetFile)\n",
             "# ==============================================================================\n",
+            "import json\n",
+            "import pyarrow.parquet as pq\n",
+            "from src.pipeline.kaggle_train import discover_data_dir, discover_public_test_file\n",
+            "\n",
             "possible_datasets = [\n",
             "    Path(\"/kaggle/input/task1-canonical-v2\"),\n",
             "    Path(\"/kaggle/input/legalir-task1-clean-data\"),\n",
@@ -185,6 +192,16 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
             "    Path(\"data/task1_canonical_v2\"),\n",
             "]\n",
             "data_dir = next((p for p in possible_datasets if (p / \"documents.parquet\").exists() or (p / \"public-official.json\").exists()), possible_datasets[0])\n",
+            "public_file = discover_public_test_file(repo_root=REPO_ROOT)\n",
+            "\n",
+            "docs_rows = pq.ParquetFile(data_dir / \"documents.parquet\").metadata.num_rows if (data_dir / \"documents.parquet\").exists() else 0\n",
+            "public_data = json.loads(public_file.read_text(encoding=\"utf-8\")) if (public_file and public_file.exists()) else {}\n",
+            "public_rows = len(public_data)\n",
+            "print(f\"[+] Canonical Data Directory: {data_dir}\")\n",
+            "print(f\"[+] Documents Count         : {docs_rows:,} (expected 8,532)\")\n",
+            "print(f\"[+] Public Queries Count    : {public_rows:,} (expected 1,000)\")\n",
+            "if public_rows != 1000 and RUN_MODE == \"full\":\n",
+            "    raise ValueError(f\"Dataset identity mismatch: public queries count is {public_rows}, expected 1,000\")\n",
             "\n",
             "possible_bundles = [\n",
             "    Path(\"/kaggle/input/legalir-production-bundle\"),\n",
@@ -203,6 +220,8 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
             "    \"--bundle-dir\", str(bundle_dir),\n",
             "    \"--output-dir\", str(output_dir),\n",
             "]\n",
+            "if RUN_MODE in (\"smoke\", \"gpu_smoke\", \"mock\"):\n",
+            "    cmd.append(\"--mock\")\n",
             "print(f\"[*] Executing Kaggle Final: {' '.join(cmd)}\")\n",
             "subprocess.run(cmd, check=True)\n"
         ]
@@ -253,8 +272,11 @@ def build_legalir_notebook(expected_commit: str | None = None) -> dict:
 def generate_and_save_notebooks(
     repo_root: Path | None = None,
     expected_commit: str | None = None,
-) -> list[Path]:
-    """Generate canonical thin competition notebooks with byte-for-byte parity."""
+) -> tuple[Path, Path]:
+    """Generate canonical thin competition notebooks with byte-for-byte parity across all surfaces.
+
+    Returns (root_nb, kernel_nb) for test backward compatibility while writing all distributed notebooks.
+    """
     root = repo_root or REPO_ROOT
     commit = expected_commit or get_current_git_commit(root)
 
@@ -273,7 +295,7 @@ def generate_and_save_notebooks(
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(nb_content, encoding="utf-8")
 
-    return target_paths
+    return target_paths[0], target_paths[1]
 
 
 def main():
@@ -282,10 +304,11 @@ def main():
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="Repository root path")
     args = parser.parse_args()
 
-    written = generate_and_save_notebooks(repo_root=args.repo_root, expected_commit=args.commit)
-    print(f"[+] Generated {len(written)} identical canonical notebooks pinned to {args.commit or get_current_git_commit(args.repo_root)}:")
-    for w in written:
-        print(f"    - {w.relative_to(args.repo_root)}")
+    root_nb, kernel_nb = generate_and_save_notebooks(repo_root=args.repo_root, expected_commit=args.commit)
+    print(f"[+] Generated canonical notebooks pinned to {args.commit or get_current_git_commit(args.repo_root)}:")
+    print(f"    - {root_nb.relative_to(args.repo_root)}")
+    print(f"    - {kernel_nb.relative_to(args.repo_root)}")
+    print("    - and all distributed mirror surfaces.")
 
 
 if __name__ == "__main__":

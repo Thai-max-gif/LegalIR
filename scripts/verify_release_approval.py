@@ -51,6 +51,7 @@ def validate_release_approval_v2(
         github_token=github_token,
         diff_fn=getattr(current_mod, "get_git_diff_files", None),
         ancestor_fn=getattr(current_mod, "is_git_ancestor", None),
+        return_metadata=True,
     )
 
 
@@ -109,7 +110,7 @@ def main() -> int:
         print(f"[-] Failed to parse release approval JSON: {exc}", file=sys.stderr)
         return 1
 
-    is_valid, errors, meta = validate_release_approval(
+    is_valid, errors, meta = validate_release_approval_v2(
         approval_data,
         repo_root=args.repo_root,
         colab_report_path=args.colab_report,
