@@ -86,7 +86,13 @@ def train_final_adapter(
         return training_report
 
     # Real training execution
-    base_model = cfg.get("base_model_name", "mock")
+    allow_mock = bool(cfg.get("allow_mock_base_model", False))
+    base_model = cfg.get("base_model_name") or cfg.get("model_name") or "BAAI/bge-reranker-v2-m3"
+    if base_model == "mock" and not allow_mock:
+        raise ValueError(
+            "Production training requires a real base model (e.g. 'BAAI/bge-reranker-v2-m3'); "
+            "base_model_name='mock' is not allowed when mock_run=False."
+        )
     max_steps = cfg.get("max_steps", None)
     batch_size = cfg.get("batch_size", 2)
     lr = cfg.get("learning_rate", 5e-5)
@@ -126,6 +132,15 @@ def train_final_adapter(
     )
     reranker.ensure_loaded()
 
+    # Verify adapter attached to expected base model
+    if hasattr(reranker.model, "peft_config"):
+        peft_cfgs = reranker.model.peft_config
+        default_peft = peft_cfgs.get("default") if isinstance(peft_cfgs, dict) else peft_cfgs
+        peft_base = getattr(default_peft, "base_model_name_or_path", None)
+        if peft_base and base_model != "mock":
+            if not (peft_base == base_model or peft_base.endswith(base_model) or base_model.endswith(peft_base)):
+                raise ValueError(f"Adapter base model mismatch: expected {base_model}, got {peft_base}")
+
     # Test scoring sample
     sample_scores = reranker.score_pairs([("câu hỏi mẫu", "văn bản pháp luật mẫu")], batch_size=1)
     if not sample_scores or math.isnan(sample_scores[0]):
@@ -138,11 +153,20 @@ def train_final_adapter(
 
     adapter_hash = sha256_directory(out_dir)
     report["status"] = "PASS"
+    report["base_model"] = base_model
+    report["device"] = str(dev)
     report["adapter_sha256"] = adapter_hash
     report["param_diff"] = diff
     report["optimizer_steps"] = steps
     report["active_peft"] = True
     report["total_learned_parameters"] = learned_params
+
+    adapter_cfg_p = out_dir / "adapter_config.json"
+    if adapter_cfg_p.is_file():
+        try:
+            report["peft_config"] = json.loads(adapter_cfg_p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
 
     with open(out_dir / "final_run_manifest.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)

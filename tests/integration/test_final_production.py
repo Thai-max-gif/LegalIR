@@ -72,6 +72,7 @@ def test_final_train_nonmock_calls_train_reranker(tmp_path):
         output_adapter_dir=adapter_out,
         runtime_config={
             "base_model_name": "mock",
+            "allow_mock_base_model": True,
             "max_steps": 1,
             "batch_size": 2,
             "device": "cpu",
@@ -103,7 +104,12 @@ def test_final_train_rejects_zero_optimizer_steps(tmp_path, monkeypatch):
 
     monkeypatch.setattr(final_train, "train_reranker", fake_train)
     with pytest.raises(ValueError, match=r"optimizer_steps \(0\) <= 0"):
-        final_train.train_final_adapter(pairs_file, tmp_path / "ad", mock_run=False)
+        final_train.train_final_adapter(
+            pairs_file,
+            tmp_path / "ad",
+            runtime_config={"base_model_name": "mock", "allow_mock_base_model": True},
+            mock_run=False,
+        )
 
 
 def test_final_train_rejects_zero_param_diff(tmp_path, monkeypatch):
@@ -123,7 +129,12 @@ def test_final_train_rejects_zero_param_diff(tmp_path, monkeypatch):
 
     monkeypatch.setattr(final_train, "train_reranker", fake_train)
     with pytest.raises(ValueError, match=r"param_diff \(0\.0\) <= 0"):
-        final_train.train_final_adapter(pairs_file, tmp_path / "ad", mock_run=False)
+        final_train.train_final_adapter(
+            pairs_file,
+            tmp_path / "ad",
+            runtime_config={"base_model_name": "mock", "allow_mock_base_model": True},
+            mock_run=False,
+        )
 
 
 def test_public_rerank_reads_production_lock_and_uses_frozen_fusion(tmp_path):

@@ -53,10 +53,25 @@ def main():
         print(f"[!] Bundle verification FAILED: {b_errors}")
         sys.exit(1)
 
+    lock_p = bundle_p / "production_lock.json"
+    reranker_cfg = {}
+    if lock_p.is_file():
+        try:
+            with open(lock_p, "r", encoding="utf-8") as f:
+                lock_data = json.load(f)
+            reranker_cfg = lock_data.get("config", {}).get("reranker", {})
+        except Exception as e:
+            print(f"[!] Warning reading production lock reranker config: {e}")
+            if not args.mock:
+                sys.exit(1)
+    elif not args.mock:
+        print(f"[!] Missing required production lock at {lock_p}")
+        sys.exit(1)
+
     print("[*] Stage K3 & K4: Training final BGE+LoRA on all queries ...")
     pairs_p = bundle_p / "final_training_pairs.parquet"
     adapter_out = out_dir / "final_adapter"
-    train_report = train_final_adapter(pairs_p, adapter_out, mock_run=args.mock)
+    train_report = train_final_adapter(pairs_p, adapter_out, runtime_config=reranker_cfg, mock_run=args.mock)
     if train_report.get("status") != "PASS":
         print("[!] Final training FAILED.")
         sys.exit(1)
