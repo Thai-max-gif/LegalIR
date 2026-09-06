@@ -17,6 +17,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.core.config import load_pipeline_config
+from src.core.hashing import sha256_file
 from src.core.paths import ProjectPaths
 from src.evaluation.evaluator import evaluate_predictions
 from src.ranking.fusion import LearnedRanker, LightGBMRanker, ReciprocalRankFusion
@@ -286,11 +287,42 @@ def train_and_evaluate_fusion_cv(
     with open(output_dir / "winning_method.json", "w", encoding="utf-8") as f:
         json.dump({"winning_method": winning_method, "decision": gate_decision}, f, indent=2)
 
+    # Standard production fusion_model.json descriptor
+    fusion_descriptor: dict[str, Any] = {
+        "schema_version": 1,
+        "winning_method": winning_method,
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
+        "feature_columns": available_cols,
+    }
+    if winning_method == "reciprocal_rank_fusion":
+        fusion_descriptor["rrf"] = {
+            "k": int(getattr(rrf_baseline, "k", 60)),
+            "weights": {str(k): float(v) for k, v in getattr(rrf_baseline, "weights", rrf_weights or {}).items()},
+        }
+    else:
+        model_filename = "fusion_model.txt"
+        model_payload_path = output_dir / model_filename
+        if (output_dir / "model_full.txt").is_file():
+            import shutil
+            shutil.copy2(output_dir / "model_full.txt", model_payload_path)
+        else:
+            full_ranker.save(model_payload_path)
+
+        payload_sha = sha256_file(model_payload_path)
+        fusion_descriptor["learned_model"] = {
+            "file": model_filename,
+            "sha256": payload_sha,
+        }
+
+    with open(output_dir / "fusion_model.json", "w", encoding="utf-8") as f:
+        json.dump(fusion_descriptor, f, indent=2, sort_keys=True)
+
     return {
         "manifest": manifest,
         "comparison": comparison_report,
         "winning_method": winning_method,
         "winner_mean_recall@5": winner_rec5,
+        "fusion_descriptor": fusion_descriptor,
     }
 
 

@@ -69,6 +69,21 @@ class ProductionBundleBuilder:
             raise FileNotFoundError(f"Bundle source file not found: {src}")
         self.files_map[rel_path] = src
 
+        # Auto-discover associated learned model payload if adding fusion_model.json
+        if rel_path == "fusion_model.json":
+            try:
+                import json
+                with open(src, "r", encoding="utf-8") as f:
+                    desc = json.load(f)
+                if desc.get("winning_method") == "learned_ranker":
+                    p_name = desc.get("learned_model", {}).get("file")
+                    if p_name and p_name not in self.files_map:
+                        candidate_payload = src.parent / p_name
+                        if candidate_payload.is_file():
+                            self.files_map[p_name] = candidate_payload
+            except Exception:
+                pass
+
     def freeze(self) -> BundleManifest:
         """Copy all files into bundle directory, verify mandatory set, and write bundle_manifest.json."""
         if self.strict_mandatory_check:

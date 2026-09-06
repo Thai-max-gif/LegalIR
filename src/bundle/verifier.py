@@ -82,5 +82,45 @@ def verify_production_bundle(
             except Exception as e:
                 errors.append(f"Failed inspecting row count on {rel_path}: {e}")
 
+    # Semantic check on fusion_model.json descriptor if present
+    fusion_desc_p = bundle_p / "fusion_model.json"
+    if fusion_desc_p.is_file():
+        try:
+            import json
+            desc = json.loads(fusion_desc_p.read_text(encoding="utf-8"))
+            if desc.get("schema_version") != 1:
+                errors.append(f"Invalid fusion_model.json schema_version: expected 1, got {desc.get('schema_version')}")
+            w_method = desc.get("winning_method")
+            if w_method not in ("reciprocal_rank_fusion", "learned_ranker"):
+                errors.append(f"Invalid winning_method in fusion_model.json: '{w_method}'")
+            elif w_method == "reciprocal_rank_fusion":
+                if "rrf" not in desc or not isinstance(desc["rrf"], dict):
+                    errors.append("fusion_model.json missing mandatory 'rrf' section for reciprocal_rank_fusion winner")
+                if "learned_model" in desc:
+                    errors.append("fusion_model.json contains 'learned_model' section but winning_method is reciprocal_rank_fusion")
+            elif w_method == "learned_ranker":
+                if "learned_model" not in desc or not isinstance(desc["learned_model"], dict):
+                    errors.append("fusion_model.json missing mandatory 'learned_model' section for learned_ranker winner")
+                else:
+                    lm = desc["learned_model"]
+                    payload_name = lm.get("file")
+                    expected_sha = lm.get("sha256")
+                    if not payload_name:
+                        errors.append("fusion_model.json learned_model missing 'file'")
+                    if not expected_sha:
+                        errors.append("fusion_model.json learned_model missing 'sha256'")
+                    if payload_name:
+                        payload_p = bundle_p / payload_name
+                        if not payload_p.is_file():
+                            errors.append(f"Missing learned fusion payload in bundle: '{payload_name}'")
+                        elif expected_sha:
+                            actual_sha = sha256_file(payload_p)
+                            if actual_sha != expected_sha:
+                                errors.append(
+                                    f"Learned fusion payload digest mismatch for '{payload_name}': expected {expected_sha}, got {actual_sha}"
+                                )
+        except Exception as e:
+            errors.append(f"Failed parsing fusion_model.json: {e}")
+
     is_valid = len(errors) == 0
     return is_valid, errors
