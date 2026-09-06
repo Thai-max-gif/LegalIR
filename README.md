@@ -92,9 +92,12 @@ Push code → [Gate A] GitHub `LegalIR CI` (GREEN) → [Gate B] Colab Single-T4 
    - Pins the exact GREEN commit SHA, verifies official v2 canonical data, runs real DEk21 Dense inference & FAISS, unloads Dense model, mines subset pairs with zero validation leakage, executes real BGE+LoRA fine-tuning ($\Delta w > 0$, finite loss), verifies adapter SHA, and validates prediction formatting.
    - Exports `colab_smoke_report.json` with PASS verdict.
    - **Invalidation Rule**: Any commit pushed after Colab PASS invalidates the prior verification.
-3. **Gate C — Manual Kaggle T4x2 FULL**:
-   - Authorized only after Gate A and Gate B succeed for the exact same commit SHA.
-   - Strictly dual-GPU: Dense on `cuda:0`, BGE Cross-Encoder on `cuda:1` over the complete 8,532-document corpus.
+3. **Gate C — Kaggle Final Thin Production Execution**:
+   - Authorized only after Gate A (CI GREEN), Gate B (Colab T4 PASS), and the immutable production bundle exists and passes all verification gates.
+   - Executes canonical runner `scripts/run_kaggle_final.py` wrapped by thin production notebooks (`legalir_training.ipynb` / `notebooks/kaggle_final.ipynb`).
+   - Verifies runtime commit, canonical dataset v2 identity, and production bundle integrity.
+   - Trains exactly one final `BAAI/bge-reranker-v2-m3` LoRA adapter on all 7,000 queries with effective batch 16.
+   - Reranks public candidates using frozen fusion winner and packages compliant `submission.zip`.
 
 ### Score Promotion Protocol (`scripts/check_score_promotion.py`)
 Score-affecting changes are gated on leakage-safe out-of-fold cross-validation evidence:
@@ -152,33 +155,37 @@ python scripts/check_score_promotion.py --candidate artifacts/task1/cv/cv_report
 
 ---
 
-## 5. Kaggle GPU T4 x2 Execution Guide
+## 5. Kaggle Final Production Execution Guide
 
-The system is optimized for Kaggle **Dual GPU T4 (T4 x2)** execution with automated device placement, mixed precision (FP16), and memory offloading.
+The production submission uses the thin Kaggle Final runner (`scripts/run_kaggle_final.py`) wrapped by the synchronized competition notebooks (`legalir_training.ipynb` / `notebooks/kaggle_final.ipynb`).
 
-### 4.1 Kaggle Kernel Setup
-1. **Notebook**: Open `legalir_training.ipynb` (or upload from `kaggle_kernel_task1/legalir_training.ipynb`).
-2. **Dataset**: Attach the official **`phucdangg/legalir-task1-clean-data`** dataset (discoverable via robust automatic resolution across `/kaggle/input`).
-3. **Accelerator**: Select **GPU T4 x2** (Dual NVIDIA Tesla T4).
-4. **Internet**: Toggle **On** (for Hugging Face model weights and minimal dependencies).
-5. **Kaggle Secret (`HF_TOKEN`)**: Add `HF_TOKEN` under **Add-ons -> Secrets** for authenticated high-bandwidth model downloads (token is securely retrieved via `kaggle_secrets.UserSecretsClient` and never printed/logged).
+### 5.1 Kaggle Kernel Setup
+1. **Notebook**: Open `legalir_training.ipynb` (or upload `kaggle_kernel_task1/legalir_training.ipynb` / `notebooks/kaggle_final.ipynb`).
+2. **Datasets**:
+   - Attach official canonical dataset: **`phucdangg/legalir-task1-clean-data`**
+   - Attach verified immutable production bundle: **`legalir-production-bundle`**
+3. **Accelerator**: Select **GPU T4** or **GPU T4 x2**.
+4. **Internet**: Toggle **On** (for downloading base reranker weights and minimal missing packages).
+5. **Kaggle Secret (`HF_TOKEN`)**: Add `HF_TOKEN` under **Add-ons -> Secrets** for high-bandwidth Hugging Face downloads.
 
-### 4.2 Notebook Execution Flow
+### 5.2 Notebook Execution Flow
 Click **Run All** or **Save Version -> Save & Run All (Commit)**:
 
-1. **Cell 0-1**: Environment & Dual-GPU discovery (`cuda:0` Dense, `cuda:1` Reranker), HF authentication, global seed 42.
-2. **Cell 2**: Repository bootstrap and minimal dependency verification (`lightgbm`, `sentencepiece`, `bm25s`, `pyvi`, `peft`, `accelerate`, `faiss`).
-3. **Cell 3**: Canonical data discovery (`phucdangg/legalir-task1-clean-data`) and public test query discovery.
-4. **Cell 4**: End-to-end production orchestrator execution (`run_kaggle_pipeline`), 5-fold OOF validation, 7,000-query query-balanced final LoRA training, and submission packaging.
+1. **Cell 0-1**: Environment & GPU preflight, PyTorch and CUDA verification.
+2. **Cell 2**: Repository bootstrap, fail-closed commit SHA verification, and minimal dependency checks (zero PyTorch reinstallation).
+3. **Cell 3**: Canonical runner execution via `scripts/run_kaggle_final.py`:
+   - Verifies runtime Git commit SHA and canonical dataset identity.
+   - Verifies production bundle fingerprints and semantic integrity.
+   - Trains final BGE LoRA adapter on all 7,000 queries with effective batch 16.
+   - Reranks public candidates using the frozen fusion winner (RRF or Learned Ranker).
+   - Validates strict submission criteria and packages `submission.zip`.
+4. **Cell 4**: Verification of final `submission.zip` artifact.
 
-### 4.3 Exported Artifacts in `/kaggle/working/legalir_run/`
-All outputs are exported to `/kaggle/working/legalir_run/` (and root `/kaggle/working/`):
-- `submission.zip`: Competition submission archive containing **strictly `submission.json` at root**.
+### 5.3 Exported Artifacts in `/kaggle/working/`
+- `submission.zip`: Official competition submission archive containing **strictly `submission.json` at root**.
 - `submission.json`: Exact 1,000 public test query predictions with 5 unique valid document IDs per query.
+- `final_adapter/`: Saved LoRA adapter weights and `final_run_manifest.json` recording base model, optimizer steps, and parameter counts.
 - `submission_manifest.json`: Verification manifest with SHA-256 hashes, query counts, and compliance checks.
-- `parameter_audit.json`: Complete parameter breakdown proving total system size is `< 4,000,000,000` parameters.
-- `gpu_smoke_report.json` & `runtime_projection.json`: Real hardware, VRAM, and cold-start/warm-cache execution projections.
-- `cv/cv_report.json` & `ablation_report.csv`: 5-fold CV metrics (Recall@1, 3, 5, Precision@5, Candidate Recalls).
 
 ---
 

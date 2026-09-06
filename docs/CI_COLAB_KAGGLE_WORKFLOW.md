@@ -37,12 +37,12 @@ To protect competition score, avoid expensive redundant compute, and eliminate O
 └─────────────────────────────────────┬─────────────────────────────────────┘
                                       ▼  (MUST BE PASS FOR EXACT SHA)
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ [Gate C] Manual Kaggle T4×2 FULL Production Run                           │
-│   • Strictly requires Dual GPU T4x2 (Dense cuda:0, Reranker cuda:1)       │
+│ [Gate C] Kaggle Final Production Run                                      │
+│   • Executes thin final runner via `scripts/run_kaggle_final.py`          │
 │   • Pins same approved Git runtime commit SHA                             │
-│   • Full official canonical v2 corpus (8,532 docs, 1.15M chunks)          │
-│   • Full 5-fold OOF cross-validation + doc-disjoint evaluation            │
-│   • Full 7,000-query query-balanced final training & 1,000 public predict │
+│   • Verifies official canonical v2 dataset and immutable production bundle│
+│   • Trains single real BAAI/bge-reranker-v2-m3 LoRA adapter on 7k queries │
+│   • Reranks public candidates under frozen fusion winner                  │
 │   • Generates root `submission.zip` containing `submission.json`          │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
