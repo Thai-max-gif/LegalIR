@@ -76,28 +76,36 @@ The total learned parameters of every model used in the final Task 1 system must
 
 ---
 
-## 3. Release Governance & Verification Architecture
+## 3. Reproducible Training Workflow & Release Architecture
 
-All code releases follow a strict three-gate release workflow documented in [`docs/CI_COLAB_KAGGLE_WORKFLOW.md`](docs/CI_COLAB_KAGGLE_WORKFLOW.md):
+All code releases follow the authoritative workflow defined in [`docs/REPRODUCIBLE_TRAINING_WORKFLOW.md`](docs/REPRODUCIBLE_TRAINING_WORKFLOW.md):
 
 ```text
-Push code → [Gate A] GitHub `LegalIR CI` (GREEN) → [Gate B] Colab Single-T4 Smoke (PASS) → [Gate C] Manual Kaggle T4x2 FULL
+Data Owner Release (Kaggle Dataset) 
+       ↓
+Local Pre-Push Gate (python scripts/verify_prepush.py) 
+       ↓
+GitHub Actions CI (PASS) 
+       ↓
+Kaggle 2×T4 Smoke Gate (notebooks/kaggle_smoke.ipynb -> PASS) 
+       ↓
+Freeze Run Tuple (Git SHA + Dataset Hash + Smoke Report) 
+       ↓
+Google Colab A100 Production Run (notebooks/colab_a100_train.ipynb) 
+       ↓
+Hugging Face Artifacts & Codabench Submission
 ```
 
-1. **Gate A — GitHub Actions (`LegalIR CI`)**:
-   - CPU-only syntax compileall, import integrity, 375+ unit/integration tests, `<4B` parameter audit, tiny CPU pipeline smoke, and byte-for-byte notebook parity.
-   - Strictly zero pretrained model weight downloads.
-2. **Gate B — Google Colab Single-T4 Contract Smoke**:
-   - Executes `colab/legalir_t4_smoke.ipynb` on a real Tesla T4 GPU running sequential `cuda:0` stages.
-   - Pins the exact GREEN commit SHA, verifies official v2 canonical data, runs real DEk21 Dense inference & FAISS, unloads Dense model, mines subset pairs with zero validation leakage, executes real BGE+LoRA fine-tuning ($\Delta w > 0$, finite loss), verifies adapter SHA, and validates prediction formatting.
-   - Exports `colab_smoke_report.json` with PASS verdict.
-   - **Invalidation Rule**: Any commit pushed after Colab PASS invalidates the prior verification.
-3. **Gate C — Kaggle Final Thin Production Execution**:
-   - Authorized only after Gate A (CI GREEN), Gate B (Colab T4 PASS), and the immutable production bundle exists and passes all verification gates.
-   - Executes canonical runner `scripts/run_kaggle_final.py` wrapped by thin production notebooks (`legalir_training.ipynb` / `notebooks/kaggle_final.ipynb`).
-   - Verifies runtime commit, canonical dataset v2 identity, and production bundle integrity.
-   - Trains exactly one final `BAAI/bge-reranker-v2-m3` LoRA adapter on all 7,000 queries with effective batch 16.
-   - Reranks public candidates using frozen fusion winner and packages compliant `submission.zip`.
+1. **Step 1 — Local Pre-Push Gate (`scripts/verify_prepush.py`) & GitHub CI**:
+   - Single command `python scripts/verify_prepush.py` runs Python syntax compilation, modular pytest suites (135+ tests), `<4B` parameter budget audit, notebook zero-drift check (`scripts/generate_notebooks.py --check-drift`), and offline pipeline smoke.
+2. **Step 2 — Kaggle 2×T4 CUDA Smoke Gate (B1.1)**:
+   - Executes `notebooks/kaggle_smoke.ipynb` on free Kaggle GPU (T4 / 2×T4).
+   - Mounts `/kaggle/input/datasets/phucdangg/legalir-task1-clean-data` directly without repository bloat.
+   - Mines a 50-query leakage-safe subset on the fly, executes real BGE+LoRA fine-tuning ($\Delta w > 0$, finite loss), tests checkpoint reload, and outputs `kaggle_smoke_report.json` with PASS verdict in ~3 minutes.
+3. **Step 3 — Google Colab A100 Production Training (B1.2)**:
+   - Executes `notebooks/colab_a100_train.ipynb` on NVIDIA A100.
+   - Enforces A100 GPU and verifies the approved Git SHA passed the Kaggle Smoke Gate.
+   - Full training on all 7,000 queries using `torch.bfloat16`, multi-branch candidate fusion, top-5 submission validation, and Hugging Face artifact export.
 
 ### Score Promotion Protocol (`scripts/check_score_promotion.py`)
 Score-affecting changes are gated on leakage-safe out-of-fold cross-validation evidence:
