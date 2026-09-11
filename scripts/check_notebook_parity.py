@@ -7,11 +7,36 @@ Checks that notebooks on disk match generator output.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+CANONICAL_NOTEBOOKS: list[str] = [
+    "notebooks/kaggle_smoke.ipynb",
+    "notebooks/colab_a100_train.ipynb",
+]
+
+
+def compute_sha256(path: Path) -> str:
+    """Compute SHA-256 digest of a file."""
+    if not path.is_file():
+        raise FileNotFoundError(f"Notebook file not found: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_all_notebook_parity(repo_root: Path = REPO_ROOT) -> tuple[bool, dict[str, str]]:
+    """Check that notebooks exist and match generator output."""
+    gen_script = repo_root / "scripts" / "generate_notebooks.py"
+    res = subprocess.run([sys.executable, str(gen_script), "--check-drift"], capture_output=True, text=True)
+    hashes = {}
+    for rel in CANONICAL_NOTEBOOKS:
+        nb_p = repo_root / rel
+        hashes[rel] = compute_sha256(nb_p) if nb_p.is_file() else "MISSING"
+    return res.returncode == 0, hashes
+
 
 
 def main() -> int:

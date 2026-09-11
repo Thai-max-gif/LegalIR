@@ -14,9 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  preflight-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     env:
       HF_HUB_OFFLINE: "1"
       TRANSFORMERS_OFFLINE: "1"
@@ -25,20 +25,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: "pip"
           cache-dependency-path: requirements.txt
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt
-      - run: python -m compileall -q src scripts
-      - run: python -c "from src.pipeline.kaggle_train import run_kaggle_pipeline; print('PIPELINE_IMPORT_OK')"
-      - run: python -c "from src.pipeline.oof_runner import OOFRunner; print('OOF_IMPORT_OK')"
-      - run: python -c "from src.training.build_pairs import build_training_pairs; print('PAIR_IMPORT_OK')"
-      - run: pytest -q
-      - run: python scripts/audit_parameters.py
-      - run: python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
-      - run: python scripts/check_notebook_parity.py
-      - run: python scripts/verify_release_approval.py --repo-root . --allow-runtime-changes
-      - run: python scripts/verify_release.py
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile Python Syntax
+        run: python -m compileall -q src scripts
+
+      - name: Run Modular Pytest Suite
+        run: |
+          pytest -q tests/unit tests/dataset tests/notebook tests/parity tests/leakage tests/memory tests/integration tests/release
+
+      - name: Audit Learned Parameter Budget (< 4B)
+        run: python scripts/audit_parameters.py
+
+      - name: Check Notebooks Zero-Drift Parity
+        run: python scripts/generate_notebooks.py --check-drift
+
+      - name: Verify Offline Kaggle Pipeline Smoke
+        run: python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
+
+      - name: Run Pre-Push Gate Verification
+        run: python scripts/verify_prepush.py --skip-pipeline
