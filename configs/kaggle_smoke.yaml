@@ -1,0 +1,17 @@
+experiment:
+  name: "legalir_kaggle_t4_smoke"
+  seed: 42
+  device: "cuda"
+
+smoke:
+  sample_queries: 50
+  optimizer_steps: 3
+  learning_rate: 2.0e-5
+  batch_size: 4
+  max_length: 256
+
+model:
+  base_model: "BAAI/bge-reranker-v2-m3"
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
