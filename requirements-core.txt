@@ -1,0 +1,4 @@
+PyYAML>=6.0,<7
+pyarrow>=21,<22
+numpy>=1.26,<3
+pytest>=8,<9

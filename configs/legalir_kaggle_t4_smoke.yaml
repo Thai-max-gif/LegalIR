@@ -1,0 +1,26 @@
+extends: legalir_base.yaml
+experiment:
+  run_id: legalir_kaggle_t4_smoke
+  output_dir: /kaggle/working/legalir_kaggle_t4_smoke
+data:
+  dataset_root: __SET_AT_RUNTIME__
+  smoke_train_limit: 128
+  smoke_validation_limit: 32
+training:
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 2
+  precision: fp16
+  gradient_checkpointing: true
+  max_steps: 10
+  logging_steps: 1
+  eval_steps: 5
+  save_steps: 5
+  epochs: 1
+  attn_implementation: eager
+gate:
+  require_git_sha: true
+  require_end_to_end: true
+  require_approval: false
+publish:
+  enabled: false

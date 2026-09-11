@@ -1,0 +1,76 @@
+experiment:
+  task_name: legalir_task1
+  seed: 42
+  run_id: legalir_run
+  output_dir: ./outputs/legalir_run
+data:
+  dataset_root: __SET_AT_RUNTIME__
+  manifest_path: auto
+  documents_path: auto
+  chunks_path: auto
+  queries_path: auto
+  qrels_path: auto
+  folds_path: splits/folds.parquet
+  document_disjoint_split_path: splits/document_disjoint_split.parquet
+  pairs_path: derived_optional/reranker_pairs.parquet
+  candidates_path: derived_optional/retrieval_candidates.parquet
+  duplicate_groups_path: metadata/duplicate_groups.json
+  smoke_train_limit: 128
+  smoke_validation_limit: 32
+model:
+  reranker_id: BAAI/bge-reranker-v2-m3
+  reranker_revision: null
+  dense_model_id: null
+  dense_model_revision: null
+  max_length: 512
+  padding: max_length
+  num_labels: 1
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [query, key, value, dense]
+  modules_to_save: [classifier]
+retrieval:
+  enabled: true
+  index_manifest_path: null
+  bm25_index_path: null
+  dense_index_path: null
+  rrf_k: 60
+  rrf_weights: {bm25: 1.0, dense: 1.0}
+  candidate_budget: 100
+  rerank_budget: 50
+  document_aggregation: max
+  top_k: 5
+training:
+  loss_type: auto
+  train_batch_unit: pairs
+  optimizer: adamw_torch
+  learning_rate: 5.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  scheduler: cosine
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+  epochs: 3
+  max_steps: null
+  logging_steps: 50
+  eval_steps: 200
+  save_steps: 200
+  save_total_limit: 2
+  selection_metric: eval_mrr_at_5
+  greater_is_better: true
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 16
+  precision: bf16
+  attn_implementation: eager
+  resume_from: null
+gate:
+  vram_threshold_bytes: 14000000000
+  require_git_sha: true
+  require_end_to_end: true
+  require_approval: false
+  lead_approval_record: null
+publish:
+  enabled: false
