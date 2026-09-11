@@ -225,3 +225,40 @@ def verify_canonical_dataset(
 
     is_valid = len(errors) == 0 and identity.is_canonical_match()
     return is_valid, identity, errors
+
+
+def discover_canonical_dataset_dir(preferred_path: Union[str, Path, None] = None) -> Path:
+    """
+    Discover the root directory containing the canonical Task 1 dataset across
+    Kaggle, Google Colab, and local environments.
+    """
+    import os
+    if preferred_path:
+        p = Path(preferred_path)
+        if (p / "documents.parquet").is_file() or (p / "canonical" / "documents.parquet").is_file():
+            return p
+
+    env_path = os.environ.get("LEGALIR_DATA_ROOT") or os.environ.get("LEGALIR_DATASET_DIR")
+    if env_path:
+        p = Path(env_path)
+        if (p / "documents.parquet").is_file() or (p / "canonical" / "documents.parquet").is_file():
+            return p
+
+    candidates = [
+        Path("/kaggle/input/datasets/phucdangg/legalir-task1-clean-data"),
+        Path("/kaggle/input/legalir-task1-clean-data"),
+        Path("/kaggle/input/task1-canonical-v2"),
+        Path("/content/drive/MyDrive/legalir-task1-clean-data"),
+        Path("/content/data/task1_canonical_v2"),
+        REPO_ROOT / "data" / "task1_canonical_v2",
+        REPO_ROOT / "artifacts" / "task1" / "data",
+    ]
+    for c in candidates:
+        if (c / "documents.parquet").is_file():
+            return c
+        if (c / "canonical" / "documents.parquet").is_file():
+            return c / "canonical"
+
+    # Default fallback to artifacts/task1/data
+    return REPO_ROOT / "artifacts" / "task1" / "data"
+
