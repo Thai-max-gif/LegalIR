@@ -29,6 +29,7 @@ wheels/
 htmlcov/
 .playwright-mcp/
 .superpowers/
+.firecrawl/
 
 # OS Files
 .DS_Store
