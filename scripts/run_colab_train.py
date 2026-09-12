@@ -91,6 +91,7 @@ def run_colab_production_training(
     mock: bool = False,
     hf_repo: str | None = None,
     hf_token: str | None = None,
+    run_mode: str = "full",
 ) -> dict[str, Any]:
     """Execute the production training run on Colab A100."""
     t0 = time.time()
@@ -133,12 +134,12 @@ def run_colab_production_training(
         with zipfile.ZipFile(submission_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("submission.json", sub_json_str)
     else:
-        print("[*] Stage 4: Launching full pipeline runner...")
+        print(f"[*] Stage 4: Launching pipeline runner (mode: {run_mode})...")
         from src.pipeline.kaggle_train import run_kaggle_pipeline
         result = run_kaggle_pipeline(
             data_dir=str(dataset_dir),
             output_dir=str(output_dir),
-            run_mode="full",
+            run_mode=run_mode,
             skip_doc_disjoint=False,
         )
         print(f"[+] Pipeline completed. Submission: {result.submission_path}")
@@ -151,6 +152,7 @@ def run_colab_production_training(
         "duration_seconds": round(time.time() - t0, 2),
         "hardware": hw_info,
         "precision": precision,
+        "run_mode": run_mode,
         "dataset_dir": str(dataset_dir),
         "adapter_dir": str(adapter_dir),
         "submission_zip": str(submission_zip),
@@ -175,6 +177,7 @@ def main() -> int:
     parser.add_argument("--precision", type=str, default="bfloat16", help="Training precision (bfloat16, float16)")
     parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker", help="Hugging Face repo ID")
     parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face API token")
+    parser.add_argument("--mode", type=str, default="full", choices=["full", "smoke"], help="Execution mode ('full' or 'smoke')")
     parser.add_argument("--allow-non-a100", action="store_true", help="Allow running on non-A100 GPU")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode for CPU testing")
     args = parser.parse_args()
@@ -190,6 +193,7 @@ def main() -> int:
             mock=args.mock,
             hf_repo=args.hf_repo,
             hf_token=args.hf_token,
+            run_mode=args.mode,
         )
         return 0
     except Exception as e:

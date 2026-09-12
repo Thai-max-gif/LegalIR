@@ -256,6 +256,8 @@ def discover_canonical_dataset_dir(preferred_path: Union[str, Path, None] = None
 
     candidates = [
         REPO_ROOT / "kaggle_dataset",
+        Path("/content/kaggle_dataset"),
+        Path("/content/LegalIR/kaggle_dataset"),
         Path("/kaggle/input/datasets/phucdangg/legalir-task1-clean-data"),
         Path("/kaggle/input/legalir-task1-clean-data"),
         Path("/kaggle/input/task1-canonical-v2"),
