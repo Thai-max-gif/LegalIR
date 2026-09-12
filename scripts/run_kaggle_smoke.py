@@ -148,6 +148,8 @@ def run_kaggle_smoke(
         reload_ok = True
     else:
         print("[*] Initializing real BAAI/bge-reranker-v2-m3 + LoRA on CUDA...")
+        import peft.import_utils
+        peft.import_utils.is_torchao_available = lambda: False
         from transformers import AutoModelForSequenceClassification, AutoTokenizer, BertConfig, BertForSequenceClassification
         from peft import LoraConfig, get_peft_model, TaskType
 

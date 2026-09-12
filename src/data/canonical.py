@@ -253,12 +253,13 @@ def discover_canonical_dataset_dir(preferred_path: Union[str, Path, None] = None
             return doc_file.parent
 
     candidates = [
+        REPO_ROOT / "kaggle_dataset",
+        REPO_ROOT / "data" / "task1_canonical_v2",
         Path("/kaggle/input/datasets/phucdangg/legalir-task1-clean-data"),
         Path("/kaggle/input/legalir-task1-clean-data"),
         Path("/kaggle/input/task1-canonical-v2"),
         Path("/content/drive/MyDrive/legalir-task1-clean-data"),
         Path("/content/data/task1_canonical_v2"),
-        REPO_ROOT / "data" / "task1_canonical_v2",
         REPO_ROOT / "artifacts" / "task1" / "data",
     ]
     for c in candidates:
