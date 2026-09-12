@@ -8,7 +8,8 @@
 set -eo pipefail
 
 GPU="${1:-A100}"
-SESSION="legalir-${GPU,,}-run"
+GPU_LOWER=$(echo "$GPU" | tr '[:upper:]' '[:lower:]')
+SESSION="legalir-${GPU_LOWER}-run"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 

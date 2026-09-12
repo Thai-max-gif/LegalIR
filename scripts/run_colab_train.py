@@ -24,6 +24,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    import peft.import_utils
+    peft.import_utils.is_torchao_available = lambda: False
+except Exception:
+    pass
+
 from src.data.canonical import discover_canonical_dataset_dir, verify_canonical_dataset
 from src.evaluation.submission import validate_submission_zip
 
