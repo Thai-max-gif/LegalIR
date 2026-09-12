@@ -69,6 +69,11 @@ if [ -f "artifacts/task1/gates/colab_t4_report.json" ]; then
     colab upload artifacts/task1/gates/colab_t4_report.json /content/colab_t4_report.json -s "$SESSION" || true
 fi
 
+if [ -f "artifacts/task1/freeze/production_freeze.json" ]; then
+    echo "[*] Syncing production freeze to /content/production_freeze.json..."
+    colab upload artifacts/task1/freeze/production_freeze.json /content/production_freeze.json -s "$SESSION" || true
+fi
+
 # 3. Execute notebook
 echo "[3/4] Executing $NOTEBOOK on remote Colab VM..."
 colab exec -s "$SESSION" -f "$NOTEBOOK" --timeout 14400

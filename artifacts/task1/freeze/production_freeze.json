@@ -1,0 +1,39 @@
+{
+  "algorithm_config_sha256": "3e53368c0080ec1f2079982a60b6710ab7bd340653f81613c516ea475a995d4e",
+  "base_models": {
+    "dense_id": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+    "dense_revision": "main",
+    "reranker_id": "BAAI/bge-reranker-v2-m3",
+    "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+  },
+  "dataset": {
+    "critical_files": {
+      "chunks.parquet": "cea5f34c37d276cb3349a752756b860e7e5d5fcdf080aabfb6741ec6debc740e",
+      "documents.parquet": "5a5ed31e0fed58f40a246480bede8e36770f844bf1d76dca38c340cb0d11723d",
+      "public-official.json": "adaa250c5469a5ddb37c3875e0aa311cb4545f0a1710903a158b25d67b7f9d89",
+      "qrels_train.parquet": "0da9d36de7bc8884d98a1c60ab9df30bbba0d63bbd3c97575712bf063a6f4e46",
+      "queries_train.parquet": "41d91da682d608439c2e05ef1f58d9df1c4136e8009e1999a1e8bb40f3b49867"
+    },
+    "logical_version": "v2",
+    "manifest_sha256": "fc7959b44e32b5559b51d20e4bf1df31fb253621898f2553ccf2d75d19b2531a",
+    "slug": "phucdangg/legalir-task1-clean-data"
+  },
+  "gates": {
+    "colab_t4": {
+      "report_sha256": "c100b36adda92e4f15a3614eb012f9ef13502dce95897121c2e1015677a6feeb",
+      "verdict": "PASS"
+    },
+    "github_ci": {
+      "run_id": 34704255283,
+      "verdict": "PASS"
+    },
+    "kaggle_t4x2": {
+      "report_sha256": "a278de8b15c0d1f8e8839a9c278756cabd9bad3cbb1549db1e5a748a318bab61",
+      "verdict": "PASS"
+    }
+  },
+  "git_sha": "d53ffc342b64937e41e8daa08ac8ce6f19e0a0ab",
+  "run_id": "task1-20260912-d53ffc3",
+  "runtime_profile": "colab_a100",
+  "schema_version": 3
+}

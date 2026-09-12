@@ -86,11 +86,16 @@ def run_a100_production_gate(
     runtime_profile_path: Path | str = REPO_ROOT / "configs" / "runtime" / "colab_a100.yaml",
     kaggle_report_path: Path | str = REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json",
     colab_t4_report_path: Path | str = REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
+    freeze_file_path: Path | str = REPO_ROOT / "artifacts" / "task1" / "freeze" / "production_freeze.json",
     allow_non_a100: bool = False,
     mock: bool = False,
     hf_repo: str | None = None,
 ) -> dict[str, Any]:
     """Execute the fail-closed A100 production training run."""
+    import shutil
+    import subprocess
+    import yaml
+
     t0 = time.time()
     dataset_dir = Path(dataset_dir)
     output_dir = Path(output_dir)
@@ -127,9 +132,19 @@ def run_a100_production_gate(
     else:
         manifest_sha256 = "mock_manifest_sha256"
 
-    # 4. Config Fingerprints
+    # 4. Config Fingerprints & Resolution
     algo_sha256 = fingerprint_structured_config(algorithm_config_path)
     runtime_sha256 = fingerprint_structured_config(runtime_profile_path)
+
+    # Export resolved configuration
+    try:
+        from src.release.fingerprints import validate_runtime_overrides
+        algo_cfg = yaml.safe_load(Path(algorithm_config_path).read_text(encoding="utf-8"))
+        runtime_cfg = yaml.safe_load(Path(runtime_profile_path).read_text(encoding="utf-8"))
+        resolved_cfg = validate_runtime_overrides(algo_cfg, runtime_cfg)
+        (output_dir / "resolved_config.yaml").write_text(yaml.safe_dump(resolved_cfg, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
 
     # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 & Colab Single-T4)
     k_path = Path(kaggle_report_path)
@@ -155,6 +170,43 @@ def run_a100_production_gate(
     else:
         k_rep_hash = "mock_k_hash"
         c_rep_hash = "mock_c_hash"
+
+    # Copy upstream reports into output directory for full provenance
+    try:
+        shutil.copyfile(k_path, output_dir / "kaggle_t4x2_report.json")
+        shutil.copyfile(c_path, output_dir / "colab_t4_report.json")
+        ds_manifest_src = dataset_dir / "dataset_manifest.json"
+        if ds_manifest_src.is_file():
+            shutil.copyfile(ds_manifest_src, output_dir / "dataset_manifest.json")
+    except Exception:
+        pass
+
+    # Cross-verify and copy production_freeze.json if present
+    freeze_path = Path(freeze_file_path)
+    if freeze_path.is_file():
+        try:
+            freeze_data = json.loads(freeze_path.read_text(encoding="utf-8"))
+            if not mock:
+                if freeze_data.get("git_sha", "").lower() != actual_sha.lower():
+                    raise RuntimeError(f"Production freeze git_sha mismatch: {freeze_data.get('git_sha')} vs {actual_sha}")
+                if freeze_data.get("dataset", {}).get("manifest_sha256") != manifest_sha256:
+                    raise RuntimeError(f"Production freeze dataset hash mismatch!")
+                if freeze_data.get("algorithm_config_sha256") != algo_sha256:
+                    raise RuntimeError(f"Production freeze algorithm config hash mismatch!")
+            shutil.copyfile(freeze_path, output_dir / "production_freeze.json")
+            print(f"[+] Verified and attached production freeze tuple: {freeze_path.name}")
+        except Exception as freeze_exc:
+            print(f"[!] Warning on production freeze check: {freeze_exc}")
+
+    # Capture system and hardware environment
+    try:
+        env_text = f"Python {sys.version}\nPyTorch {sys.modules.get('torch', 'unknown')}\nPlatform {sys.platform}\n"
+        (output_dir / "environment.txt").write_text(env_text, encoding="utf-8")
+        smi_res = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+        if smi_res.returncode == 0:
+            (output_dir / "nvidia-smi.txt").write_text(smi_res.stdout, encoding="utf-8")
+    except Exception:
+        pass
 
     # 6. Full Training Execution
     if mock:
