@@ -52,6 +52,36 @@ def verify_a100_gpu(allow_non_a100: bool = False, mock: bool = False) -> dict[st
     return {"gpu_name": gpu_name, "vram_gb": vram_gb, "is_a100": is_a100}
 
 
+def upload_artifacts_to_huggingface(
+    output_dir: Path,
+    repo_id: str = "dangphuc2109/legalir-task1-reranker",
+    token: str | None = None,
+) -> bool:
+    """Automatically upload trained adapter, submission, and manifest to Hugging Face."""
+    token = token or os.environ.get("HF_TOKEN")
+    if not token:
+        print("[!] Note: No HF_TOKEN found in environment. Skipping Hugging Face auto-upload.")
+        return False
+
+    repo_id = repo_id or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
+    print(f"[*] Uploading production artifacts to Hugging Face repo: {repo_id} ...")
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+        commit = api.upload_folder(
+            repo_id=repo_id,
+            folder_path=str(output_dir),
+            commit_message=f"Upload A100 production training artifacts ({time.strftime('%Y-%m-%d %H:%M:%S')})",
+            ignore_patterns=["*.tmp", "*.lock", "*__pycache__*"],
+        )
+        print(f"[+] Successfully uploaded to Hugging Face: https://huggingface.co/{repo_id}")
+        return True
+    except Exception as exc:
+        print(f"[!] Warning: Failed uploading to Hugging Face ({exc}). Artifacts remain safe locally at {output_dir}.")
+        return False
+
+
 def run_colab_production_training(
     dataset_dir: Path,
     output_dir: Path,
@@ -59,6 +89,8 @@ def run_colab_production_training(
     precision: str = "bfloat16",
     allow_non_a100: bool = False,
     mock: bool = False,
+    hf_repo: str | None = None,
+    hf_token: str | None = None,
 ) -> dict[str, Any]:
     """Execute the production training run on Colab A100."""
     t0 = time.time()
@@ -112,6 +144,7 @@ def run_colab_production_training(
         print(f"[+] Pipeline completed. Submission: {result.submission_path}")
 
     # 5. Build run_manifest.json
+    target_hf_repo = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
     run_manifest = {
         "stage": "B1.2_COLAB_A100_PRODUCTION_RUN",
         "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -121,10 +154,16 @@ def run_colab_production_training(
         "dataset_dir": str(dataset_dir),
         "adapter_dir": str(adapter_dir),
         "submission_zip": str(submission_zip),
+        "huggingface_repo": f"https://huggingface.co/{target_hf_repo}",
         "status": "COMPLETED",
     }
     run_manifest_path.write_text(json.dumps(run_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"[+] Run manifest written to {run_manifest_path}")
+
+    # 6. Automatic upload to Hugging Face Hub (skipped in mock mode unless token passed)
+    if not mock:
+        upload_artifacts_to_huggingface(output_dir, repo_id=target_hf_repo, token=hf_token)
+
     return run_manifest
 
 
@@ -134,6 +173,8 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=Path("/content/legalir_production_run"), help="Output directory")
     parser.add_argument("--smoke-report", type=Path, default=None, help="Path to kaggle_smoke_report.json")
     parser.add_argument("--precision", type=str, default="bfloat16", help="Training precision (bfloat16, float16)")
+    parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker", help="Hugging Face repo ID")
+    parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face API token")
     parser.add_argument("--allow-non-a100", action="store_true", help="Allow running on non-A100 GPU")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode for CPU testing")
     args = parser.parse_args()
@@ -147,6 +188,8 @@ def main() -> int:
             precision=args.precision,
             allow_non_a100=args.allow_non_a100,
             mock=args.mock,
+            hf_repo=args.hf_repo,
+            hf_token=args.hf_token,
         )
         return 0
     except Exception as e:

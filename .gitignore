@@ -33,6 +33,8 @@ htmlcov/
 .agents/
 skills-lock.json
 /LegalIR/
+.env
+*.env
 
 # OS Files
 .DS_Store
