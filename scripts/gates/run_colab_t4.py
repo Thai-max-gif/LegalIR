@@ -21,6 +21,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 try:
+    import sys
+    sys.modules["torchao"] = None
     import peft.import_utils
     peft.import_utils.is_torchao_available = lambda: False
 except Exception:
