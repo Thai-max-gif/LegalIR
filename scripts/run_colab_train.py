@@ -48,8 +48,21 @@ def run_colab_production_training(
             mock=mock or allow_non_a100,
         )
     else:
-        k_rep = smoke_report_path or (REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json")
-        c_rep = REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json"
+        k_cands = [
+            Path(smoke_report_path) if smoke_report_path else None,
+            Path("/content/kaggle_t4x2_report.json"),
+            Path("/content/LegalIR/artifacts/task1/gates/kaggle_t4x2_report.json"),
+            REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json",
+        ]
+        k_rep = next((p for p in k_cands if p and p.is_file()), k_cands[-1])
+
+        c_cands = [
+            Path("/content/colab_t4_report.json"),
+            Path("/content/LegalIR/artifacts/task1/gates/colab_t4_report.json"),
+            REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
+        ]
+        c_rep = next((p for p in c_cands if p and p.is_file()), c_cands[-1])
+
         if mock:
             output_dir.mkdir(parents=True, exist_ok=True)
             if not Path(k_rep).is_file():
