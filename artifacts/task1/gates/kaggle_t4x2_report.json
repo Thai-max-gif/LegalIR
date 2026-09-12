@@ -1,0 +1,30 @@
+{
+  "adapter_reload_ok": true,
+  "algorithm_config_sha256": "3e53368c0080ec1f2079982a60b6710ab7bd340653f81613c516ea475a995d4e",
+  "cpu_fallback_used": false,
+  "dataset_manifest_sha256": "fc7959b44e32b5559b51d20e4bf1df31fb253621898f2553ccf2d75d19b2531a",
+  "dense_device": "cuda:0",
+  "devices": [
+    "Tesla T4",
+    "Tesla T4"
+  ],
+  "elapsed_seconds": 25.45,
+  "final_loss": 4.721749782562256,
+  "git_sha": "7f4ce82e45fb3d64093d7468add82dc6ff493446",
+  "gpu_count": 2,
+  "initial_loss": 5.247106075286865,
+  "model_fallback_used": false,
+  "optimizer_steps": 3,
+  "real_models_only": true,
+  "reranker_device": "cuda:1",
+  "runtime_profile_sha256": "bd78d178c3c610dfef84155c001cdf1cebc14bbf8ad4c4bf271be8f8216e56fc",
+  "smoke_metrics": {
+    "final_loss": 4.721749782562256,
+    "initial_loss": 5.247106075286865,
+    "sample_queries": 50,
+    "weight_delta": 280.4458666406572
+  },
+  "stage": "KAGGLE_T4X2",
+  "verdict": "PASS",
+  "weight_delta": 280.4458666406572
+}
