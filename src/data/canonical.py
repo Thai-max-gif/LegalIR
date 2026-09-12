@@ -248,9 +248,11 @@ def discover_canonical_dataset_dir(preferred_path: Union[str, Path, None] = None
     kaggle_input = Path("/kaggle/input")
     if kaggle_input.is_dir():
         for doc_file in kaggle_input.rglob("documents.parquet"):
-            if doc_file.parent.name == "canonical":
-                return doc_file.parent
-            return doc_file.parent
+            candidate = doc_file.parent
+            if (candidate / "queries_train.parquet").is_file():
+                return candidate
+            if (candidate.parent / "queries_train.parquet").is_file():
+                return candidate.parent
 
     candidates = [
         REPO_ROOT / "kaggle_dataset",

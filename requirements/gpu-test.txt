@@ -1,5 +1,0 @@
--r kaggle.txt
-torch>=2.1.0
-transformers>=4.36.0
-sentence-transformers>=2.2.0
-huggingface-hub>=0.20.0

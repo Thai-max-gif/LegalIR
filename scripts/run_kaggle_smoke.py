@@ -83,11 +83,17 @@ def run_kaggle_smoke(
     # 1. Verify Dataset
     print(f"[*] Verifying dataset at: {dataset_dir}")
     queries_p = dataset_dir / "queries_train.parquet"
-    if not queries_p.is_file() and mock:
-        print("[*] Canonical data not found in mock mode. Auto-generating toy dataset...")
-        from scripts.smoke_kaggle_pipeline import create_toy_canonical_dataset
-        dataset_dir = create_toy_canonical_dataset(output_dir / "toy_canonical")
-        queries_p = dataset_dir / "queries_train.parquet"
+    if not queries_p.is_file():
+        if mock:
+            print("[*] Canonical data not found in mock mode. Auto-generating toy dataset...")
+            from scripts.smoke_kaggle_pipeline import create_toy_canonical_dataset
+            dataset_dir = create_toy_canonical_dataset(output_dir / "toy_canonical")
+            queries_p = dataset_dir / "queries_train.parquet"
+        else:
+            raise FileNotFoundError(
+                f"queries_train.parquet not found in {dataset_dir}. "
+                f"Please ensure Kaggle dataset phucdangg/legalir-task1-clean-data is attached to the kernel."
+            )
 
     is_valid, ident, ds_errors = verify_canonical_dataset(dataset_dir)
     if not is_valid:
