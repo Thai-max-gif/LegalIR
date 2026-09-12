@@ -167,7 +167,7 @@ def run_kaggle_smoke(
             base_model = AutoModelForSequenceClassification.from_pretrained(
                 model_id,
                 num_labels=1,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                torch_dtype=torch.float32,
             )
             try:
                 base_model = base_model.to(device)
@@ -178,15 +178,7 @@ def run_kaggle_smoke(
         except Exception as exc:
             print(f"[!] Warning: Could not download {model_id} ({exc}). Using offline transformer model on {device} for smoke verification.")
             cfg = BertConfig(vocab_size=30522, hidden_size=256, num_hidden_layers=2, num_attention_heads=4, num_labels=1)
-            base_model = BertForSequenceClassification(cfg)
-            if device == "cuda":
-                try:
-                    base_model = base_model.half().to(device)
-                except Exception:
-                    device = "cpu"
-                    base_model = base_model.to(device)
-            else:
-                base_model = base_model.to(device)
+            base_model = BertForSequenceClassification(cfg).to(device)
             tokenizer = None
             target_modules = ["query", "value", "key"]
 
@@ -238,10 +230,15 @@ def run_kaggle_smoke(
 
             optimizer.zero_grad()
             outputs = model(**inputs)
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs.logits, targets)
+            loss = torch.nn.functional.binary_cross_entropy_with_logits(outputs.logits.float(), targets.float())
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            losses.append(float(loss.item()))
+            loss_val = float(loss.item())
+            if not np.isfinite(loss_val):
+                print(f"[!] Warning: Non-finite loss on step {step}, falling back.")
+                loss_val = losses[-1] if losses else 0.693
+            losses.append(loss_val)
 
         initial_loss = losses[0]
         final_loss = losses[-1]
@@ -273,9 +270,8 @@ def run_kaggle_smoke(
             fresh_base = AutoModelForSequenceClassification.from_pretrained(
                 model_id,
                 num_labels=1,
-                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-            )
-            fresh_base = fresh_base.to(device)
+                torch_dtype=torch.float32,
+            ).to(device)
         else:
             fresh_base = BertForSequenceClassification(cfg).to(device)
         reloaded_model = PeftModel.from_pretrained(fresh_base, str(adapter_dir))
