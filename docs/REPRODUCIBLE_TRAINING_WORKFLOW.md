@@ -60,14 +60,35 @@ This executes:
 ---
 
 ### Stage 3: Google Colab A100 Production Training (B1.2)
+
+You can run production training either automatically via the **Colab CLI** or manually via the **Colab Web Interface**:
+
+#### Option A: One-Command Automated CLI Runner (Recommended)
+From your local terminal, run:
+```bash
+./scripts/run_colab_cli.sh A100
+```
+This script automatically:
+1. Provisions an NVIDIA A100 GPU session (`colab new -s legalir-a100-run --gpu A100`).
+2. Uploads local credentials from `.env` to `/content/.env` on the VM.
+3. Executes `notebooks/colab_a100_train.ipynb` with a 4-hour timeout.
+4. Trains the full BGE LoRA reranker on all 7,000 queries using `torch.bfloat16`.
+5. Validates and packages `submission.zip`.
+6. Uploads the final adapter, logs, metrics, and `run_manifest.json` directly to your private Hugging Face model repository: `https://huggingface.co/dangphuc2109/legalir-task1-reranker`.
+7. Once finished, releases the VM with `colab stop -s legalir-a100-run` to protect your compute credits.
+
+*Tip: To test with a low-cost GPU first before using A100 credits, simply pass `T4`:*
+```bash
+./scripts/run_colab_cli.sh T4
+```
+
+#### Option B: Manual Web Interface
 1. **Open Notebook on Google Colab**:
    - Open `notebooks/colab_a100_train.ipynb`.
 2. **Select Runtime**:
    - Runtime $\rightarrow$ Change runtime type $\rightarrow$ **NVIDIA A100 GPU** (High-RAM).
-3. **Click "Run All"**:
-   - Preflight verifies GPU is NVIDIA A100 and confirms Kaggle Smoke Gate passed for current Git SHA.
-   - Trains `BAAI/bge-reranker-v2-m3` with LoRA on all 7,000 queries using `torch.bfloat16`.
-   - Runs public candidate reranking and fusion for 1,000 public test queries.
-   - Generates `submission.zip` strictly compliant with competition invariants ($1 \le |answer| \le 5$).
-   - Creates `run_manifest.json` tying Dataset Hash + Git SHA + Smoke Run ID + Model Revision.
-   - Exports model artifacts and logs to Hugging Face Hub.
+3. **Configure Secrets**:
+   - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN` with write permissions.
+4. **Click "Run All"**:
+   - Preflight verifies GPU is NVIDIA A100 and confirms Kaggle Smoke Gate passed.
+   - Executes full training, validates submission, and publishes artifacts to Hugging Face.
