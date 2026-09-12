@@ -343,7 +343,7 @@ def build_colab_train_notebook(commit_sha: str) -> dict:
             "# ==============================================================================\n",
             "# Cell 3: Dependencies Preflight\n",
             "# ==============================================================================\n",
-            "subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", \"-q\", \"--upgrade-strategy\", \"only-if-needed\", \"-r\", \"requirements-gpu.txt\"], check=False)\n",
+            "subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", \"-q\", \"--upgrade-strategy\", \"only-if-needed\", \"-r\", \"requirements/gpu.txt\"], check=False)\n",
             "print(\"[+] Dependencies ready.\")\n",
         ],
     }

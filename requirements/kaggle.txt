@@ -1,8 +1,12 @@
+# Kaggle environment requirements
+# Kaggle already supplies a CUDA-matched torch/torchvision/torchaudio set.
+# Do NOT install torch here: replacing only torch breaks the preinstalled trio.
 -r base.txt
-lightgbm>=4.0.0
-sentencepiece>=0.1.99
-bm25s>=0.2.0
-pyvi>=0.1.1
-peft>=0.7.0
-accelerate>=0.26.0
-faiss-cpu>=1.7.0
+transformers>=4.45,<5
+peft>=0.13,<0.16
+accelerate>=1.0,<2
+huggingface_hub>=0.25,<1
+bm25s>=0.2,<1
+pyvi>=0.1.1,<1
+pynvml>=11,<13
+sentence-transformers>=3,<6
