@@ -27,6 +27,7 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+*_output.ipynb
 .playwright-mcp/
 .superpowers/
 .firecrawl/
