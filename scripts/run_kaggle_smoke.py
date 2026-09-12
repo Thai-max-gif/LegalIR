@@ -155,17 +155,32 @@ def run_kaggle_smoke(
 
         model_id = "BAAI/bge-reranker-v2-m3"
         target_modules = ["query", "value", "key"]
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         try:
             tokenizer = AutoTokenizer.from_pretrained(model_id)
             base_model = AutoModelForSequenceClassification.from_pretrained(
                 model_id,
                 num_labels=1,
-                torch_dtype=torch.float16,
-            ).cuda()
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            )
+            try:
+                base_model = base_model.to(device)
+            except Exception as cuda_exc:
+                print(f"[!] Warning: CUDA device transfer failed ({cuda_exc}). Using CPU.")
+                device = "cpu"
+                base_model = base_model.to(device)
         except Exception as exc:
-            print(f"[!] Warning: Could not download {model_id} ({exc}). Using offline transformer model on CUDA for smoke verification.")
+            print(f"[!] Warning: Could not download {model_id} ({exc}). Using offline transformer model on {device} for smoke verification.")
             cfg = BertConfig(vocab_size=30522, hidden_size=256, num_hidden_layers=2, num_attention_heads=4, num_labels=1)
-            base_model = BertForSequenceClassification(cfg).half().cuda()
+            base_model = BertForSequenceClassification(cfg)
+            if device == "cuda":
+                try:
+                    base_model = base_model.half().to(device)
+                except Exception:
+                    device = "cpu"
+                    base_model = base_model.to(device)
+            else:
+                base_model = base_model.to(device)
             tokenizer = None
             target_modules = ["query", "value", "key"]
 
@@ -206,13 +221,14 @@ def run_kaggle_smoke(
                     truncation=True,
                     max_length=256,
                     return_tensors="pt",
-                ).to("cuda")
+                )
+                inputs = {k: v.to(device) for k, v in inputs.items()}
             else:
                 inputs = {
-                    "input_ids": torch.randint(0, 1000, (len(pairs), 64), device="cuda"),
-                    "attention_mask": torch.ones((len(pairs), 64), device="cuda"),
+                    "input_ids": torch.randint(0, 1000, (len(pairs), 64), device=device),
+                    "attention_mask": torch.ones((len(pairs), 64), device=device),
                 }
-            targets = torch.tensor(labels, dtype=torch.float32, device="cuda").unsqueeze(-1)
+            targets = torch.tensor(labels, dtype=torch.float32, device=device).unsqueeze(-1)
 
             optimizer.zero_grad()
             outputs = model(**inputs)
@@ -230,7 +246,7 @@ def run_kaggle_smoke(
             if p.requires_grad and n in w_init:
                 weight_delta += float(torch.norm(p.detach() - w_init[n]).item())
 
-        peak_vram_gb = round(torch.cuda.max_memory_allocated() / (1024**3), 2)
+        peak_vram_gb = round(torch.cuda.max_memory_allocated() / (1024**3), 2) if device == "cuda" else 0.0
         print(f"[+] Losses: {losses} | Weight Delta: {weight_delta:.4f} | Peak VRAM: {peak_vram_gb} GB")
 
         # Save adapter
@@ -243,17 +259,19 @@ def run_kaggle_smoke(
         print("[*] Testing adapter reload into fresh instance...")
         del model, base_model, optimizer
         gc.collect()
-        torch.cuda.empty_cache()
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
         from peft import PeftModel
         if tokenizer is not None:
             fresh_base = AutoModelForSequenceClassification.from_pretrained(
                 model_id,
                 num_labels=1,
-                torch_dtype=torch.float16,
-            ).cuda()
+                torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+            )
+            fresh_base = fresh_base.to(device)
         else:
-            fresh_base = BertForSequenceClassification(cfg).half().cuda()
+            fresh_base = BertForSequenceClassification(cfg).to(device)
         reloaded_model = PeftModel.from_pretrained(fresh_base, str(adapter_dir))
         reloaded_model.eval()
         reload_ok = True

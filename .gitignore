@@ -30,6 +30,9 @@ htmlcov/
 .playwright-mcp/
 .superpowers/
 .firecrawl/
+.agents/
+skills-lock.json
+/LegalIR/
 
 # OS Files
 .DS_Store
