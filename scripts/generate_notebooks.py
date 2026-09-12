@@ -42,7 +42,7 @@ def get_current_git_commit(repo_root: Path = REPO_ROOT) -> str:
         except Exception:
             pass
 
-    return "718efb7ba4565fa5b863f05927122484f8e58c2f"
+    return "7f4ce82e45fb3d64093d7468add82dc6ff493446"
 
 
 def create_jupyter_notebook(cells: list[dict]) -> dict:

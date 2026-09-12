@@ -1,20 +1,20 @@
 {
   "schema_version": 2,
-  "runtime_sha": "6439afe14a9ecba11dc904a0e10dd0aebc747379",
+  "runtime_sha": "7f4ce82e45fb3d64093d7468add82dc6ff493446",
   "ci": {
     "workflow": "LegalIR CI",
-    "runtime_sha": "6439afe14a9ecba11dc904a0e10dd0aebc747379",
+    "runtime_sha": "7f4ce82e45fb3d64093d7468add82dc6ff493446",
     "run_id": 34696906267,
     "conclusion": "success"
   },
   "colab": {
-    "runtime_sha": "6439afe14a9ecba11dc904a0e10dd0aebc747379",
+    "runtime_sha": "7f4ce82e45fb3d64093d7468add82dc6ff493446",
     "report_sha256": "37ed77670397a90aff6cbe90562fccad059fac20748d62b13aa5e6b51ca7ecc6",
     "result": "PASS",
     "gpu": "Tesla T4"
   },
   "production": {
-    "kaggle_expected_commit": "6439afe14a9ecba11dc904a0e10dd0aebc747379",
+    "kaggle_expected_commit": "7f4ce82e45fb3d64093d7468add82dc6ff493446",
     "dual_gpu_required": true,
     "dense_device": "cuda:0",
     "reranker_device": "cuda:1"
