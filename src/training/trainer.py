@@ -482,6 +482,45 @@ def setup_peft_model(
     return peft_model, meta
 
 
+def resolve_precision_config(
+    config: Mapping[str, Any],
+    device: Optional[torch.device] = None,
+) -> tuple[str, Optional[torch.dtype], bool, bool]:
+    """
+    Resolve precision setting into (precision_str, autocast_dtype, amp_enabled, scaler_enabled).
+    Supported: 'fp16', 'bf16', 'fp32', with backward-compatible support for 'fp16': bool.
+    """
+    if device is None:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    prec = config.get("precision")
+    if prec is None:
+        if config.get("fp16") is not None:
+            prec = "fp16" if config.get("fp16") else "fp32"
+        else:
+            prec = "fp16"
+
+    prec = str(prec).lower().strip()
+    if prec in ("float16", "half"):
+        prec = "fp16"
+    elif prec in ("bfloat16",):
+        prec = "bf16"
+    elif prec in ("float32", "single"):
+        prec = "fp32"
+
+    dtype_map = {
+        "fp16": torch.float16,
+        "bf16": torch.bfloat16,
+        "fp32": None,
+    }
+    autocast_dtype = dtype_map.get(prec)
+    is_cuda = device.type == "cuda"
+    amp_enabled = (autocast_dtype is not None) and is_cuda
+    scaler_enabled = (autocast_dtype == torch.float16) and is_cuda
+
+    return prec, autocast_dtype, amp_enabled, scaler_enabled
+
+
 class RerankerTrainer:
     """
     Supervised Cross-Encoder Reranker Trainer with PEFT/LoRA, ranking loss objectives,
@@ -518,7 +557,11 @@ class RerankerTrainer:
         self.warmup_ratio = float(self.config.get("warmup_ratio", 0.1))
         self.gradient_accumulation_steps = max(1, int(self.config.get("gradient_accumulation_steps", 1)))
         self.max_grad_norm = float(self.config.get("max_grad_norm", 1.0))
-        self.fp16 = bool(self.config.get("fp16", True)) and self.device.type == "cuda"
+        self.precision_name, self.autocast_dtype, self.amp_enabled, self.scaler_enabled = resolve_precision_config(
+            self.config, device=self.device
+        )
+        self.fp16 = (self.autocast_dtype == torch.float16) and self.device.type == "cuda"
+        self.bf16 = (self.autocast_dtype == torch.bfloat16) and self.device.type == "cuda"
 
         # LoRA setup
         use_lora = self.config.get("use_lora", True)
@@ -624,10 +667,10 @@ class RerankerTrainer:
         queries_with_negative_seen: set[str] = set()
         nonfinite_loss_count = 0
 
-        # AMP GradScaler for stable mixed precision training on CUDA
-        scaler = torch.amp.GradScaler("cuda", enabled=self.fp16)
+        # AMP GradScaler for stable mixed precision training on CUDA (enabled only for fp16)
+        scaler = torch.amp.GradScaler("cuda", enabled=self.scaler_enabled)
 
-        print(f"Starting training: {total_training_steps} steps, device={self.device}, fp16={self.fp16}")
+        print(f"Starting training: {total_training_steps} steps, device={self.device}, precision={self.precision_name}, amp={self.amp_enabled}, scaler={self.scaler_enabled}")
 
         epoch = 0
         while global_step < total_training_steps:
@@ -662,7 +705,7 @@ class RerankerTrainer:
                     if isinstance(v, torch.Tensor) and k != "labels"
                 }
 
-                with torch.autocast(device_type=self.device.type, dtype=torch.float16, enabled=self.fp16):
+                with torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype or torch.float32, enabled=self.amp_enabled):
                     outputs = self.model(**inputs)
                     logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
                     logits = logits.view(-1)

@@ -1,0 +1,18 @@
+runtime:
+  accelerator: "T4"
+  required_cuda_devices: 1
+  dense_device: "cuda:0"
+  reranker_device: "cuda:0"
+  num_workers: 2
+
+training:
+  precision: "fp16"
+  batch_size: 8
+  gradient_accumulation_steps: 2
+
+smoke:
+  train_queries: 64
+  validation_queries: 32
+  public_queries: 16
+  max_documents: 2000
+  reranker_optimizer_steps: 10

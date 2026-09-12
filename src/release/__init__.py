@@ -1,5 +1,30 @@
-"""Release provenance and approval verification models."""
+"""Release provenance, contracts, fingerprints, and approval verification models."""
 
+from src.release.contracts import (
+    DeviceContract,
+    HardwareProfile,
+    KAGGLE_T4X2_CONTRACT,
+    COLAB_T4_CONTRACT,
+    COLAB_A100_CONTRACT,
+    verify_device_contract,
+)
+from src.release.fingerprints import (
+    CRITICAL_DATASET_FILES,
+    PROTECTED_SCORE_KEYS,
+    ShaMismatchError,
+    DatasetFingerprintMismatchError,
+    ProtectedKeyViolationError,
+    GateChainValidationError,
+    compute_file_sha256,
+    compute_canonical_json_hash,
+    fingerprint_structured_config,
+    get_git_head_sha,
+    assert_exact_git_sha,
+    generate_dataset_manifest,
+    verify_dataset_fingerprint,
+    validate_runtime_overrides,
+    verify_prior_gate_reports,
+)
 from src.release.provenance import (
     ReleaseApproval,
     RELEASE_ONLY_DIFF_ALLOWLIST,
@@ -8,6 +33,27 @@ from src.release.provenance import (
 )
 
 __all__ = [
+    "DeviceContract",
+    "HardwareProfile",
+    "KAGGLE_T4X2_CONTRACT",
+    "COLAB_T4_CONTRACT",
+    "COLAB_A100_CONTRACT",
+    "verify_device_contract",
+    "CRITICAL_DATASET_FILES",
+    "PROTECTED_SCORE_KEYS",
+    "ShaMismatchError",
+    "DatasetFingerprintMismatchError",
+    "ProtectedKeyViolationError",
+    "GateChainValidationError",
+    "compute_file_sha256",
+    "compute_canonical_json_hash",
+    "fingerprint_structured_config",
+    "get_git_head_sha",
+    "assert_exact_git_sha",
+    "generate_dataset_manifest",
+    "verify_dataset_fingerprint",
+    "validate_runtime_overrides",
+    "verify_prior_gate_reports",
     "ReleaseApproval",
     "RELEASE_ONLY_DIFF_ALLOWLIST",
     "validate_sha",

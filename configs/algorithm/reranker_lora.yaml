@@ -1,0 +1,19 @@
+base_model: "BAAI/bge-reranker-v2-m3"
+revision: "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+loss_type: "bce"
+use_lora: true
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules: ["query", "value", "key", "dense"]
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+
+learning_rate: 2.0e-5
+max_length: 512
+warmup_ratio: 0.1
+gradient_checkpointing: true

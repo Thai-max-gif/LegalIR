@@ -72,6 +72,7 @@ def main() -> int:
     if not args.skip_tests:
         test_suites = [
             "tests/unit",
+            "tests/contracts",
             "tests/dataset",
             "tests/notebook",
             "tests/parity",
@@ -97,16 +98,23 @@ def main() -> int:
         if not run_gate([python_bin, str(gen_script), "--check-drift"], "Notebooks zero-drift check"):
             return 1
 
-    # 5. Offline pipeline smoke
+    # 5. Check no fallbacks
+    fallbacks_script = REPO_ROOT / "scripts" / "check_no_fallbacks.py"
+    if fallbacks_script.is_file():
+        if not run_gate([python_bin, str(fallbacks_script)], "Forbidden fallback detection"):
+            return 1
+
+    # 6. Offline pipeline smoke
     if not args.skip_pipeline:
         smoke_script = REPO_ROOT / "scripts" / "smoke_kaggle_pipeline.py"
         if smoke_script.is_file():
             if not run_gate([python_bin, str(smoke_script), "--tiny", "--run-mode", "smoke"], "Offline Kaggle pipeline smoke"):
                 return 1
 
-    # 6. Git hygiene
+    # 7. Git hygiene (Fail-Closed)
     if not check_git_hygiene():
-        print("[!] Note: Git working tree contains unstaged or heavy files.")
+        print("[!] FAILED: Git working tree hygiene audit failed.", file=sys.stderr)
+        return 1
 
     print("\n=================================================================")
     print("[+] ALL PRE-PUSH VERIFICATION GATES PASSED.")

@@ -6,7 +6,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 NOTEBOOK_PATHS = [
+    REPO_ROOT / "notebooks/kaggle_t4x2_smoke.ipynb",
     REPO_ROOT / "notebooks/kaggle_smoke.ipynb",
+    REPO_ROOT / "notebooks/colab_t4_smoke.ipynb",
     REPO_ROOT / "notebooks/colab_a100_train.ipynb",
 ]
 

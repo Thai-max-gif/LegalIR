@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""
+LegalIR Authoritative Colab A100 Production Gate Runner (Notion B1.2).
+Executes full production training with BAAI/bge-reranker-v2-m3 + LoRA on all 7,000 queries.
+Enforces:
+1. Single NVIDIA A100 GPU (cuda:0).
+2. Prior Kaggle Dual-T4 PASS report.
+3. Prior Colab Single-T4 PASS report.
+4. Cryptographic dataset, Git SHA, and config fingerprint matches.
+5. End-to-end BF16 precision.
+6. Top-5 submission validation and Hugging Face release.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import os
+from pathlib import Path
+import sys
+import time
+from typing import Any
+import zipfile
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    import peft.import_utils
+    peft.import_utils.is_torchao_available = lambda: False
+except Exception:
+    pass
+
+from src.release.contracts import COLAB_A100_CONTRACT, verify_device_contract
+from src.release.fingerprints import (
+    assert_exact_git_sha,
+    compute_file_sha256,
+    compute_canonical_json_hash,
+    fingerprint_structured_config,
+    verify_dataset_fingerprint,
+    verify_prior_gate_reports,
+)
+from src.evaluation.submission import validate_submission_zip
+
+
+def upload_artifacts_to_huggingface(
+    output_dir: Path,
+    repo_id: str = "dangphuc2109/legalir-task1-reranker",
+    token: str | None = None,
+) -> str | None:
+    """Upload production artifacts to Hugging Face Hub and return the commit SHA."""
+    token = token or os.environ.get("HF_TOKEN")
+    if not token:
+        print("[!] Note: No HF_TOKEN found in environment. Skipping Hugging Face auto-upload.", flush=True)
+        return None
+
+    repo_id = repo_id or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
+    print(f"[*] Uploading production artifacts to Hugging Face repo: {repo_id} ...", flush=True)
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+        commit = api.upload_folder(
+            repo_id=repo_id,
+            folder_path=str(output_dir),
+            commit_message=f"Upload A100 production training artifacts ({time.strftime('%Y-%m-%d %H:%M:%S')})",
+            ignore_patterns=["*.tmp", "*.lock", "*__pycache__*"],
+        )
+        commit_sha = getattr(commit, "oid", str(commit))
+        print(f"[+] Successfully uploaded to Hugging Face: https://huggingface.co/{repo_id} (Commit: {commit_sha})", flush=True)
+        return commit_sha
+    except Exception as exc:
+        print(f"[!] Warning: Failed uploading to Hugging Face ({exc}). Artifacts remain safe locally at {output_dir}.", flush=True)
+        return None
+
+
+def run_a100_production_gate(
+    dataset_dir: Path | str,
+    output_dir: Path | str,
+    expected_sha: str = "",
+    algorithm_config_path: Path | str = REPO_ROOT / "configs" / "algorithm" / "legalir_v2.yaml",
+    runtime_profile_path: Path | str = REPO_ROOT / "configs" / "runtime" / "colab_a100.yaml",
+    kaggle_report_path: Path | str = REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json",
+    colab_t4_report_path: Path | str = REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
+    allow_non_a100: bool = False,
+    mock: bool = False,
+    hf_repo: str | None = None,
+) -> dict[str, Any]:
+    """Execute the fail-closed A100 production training run."""
+    t0 = time.time()
+    dataset_dir = Path(dataset_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    run_manifest_path = output_dir / "run_manifest.json"
+    submission_zip = output_dir / "submission.zip"
+    adapter_dir = output_dir / "final_adapter"
+
+    print("=================================================================", flush=True)
+    print("LegalIR Colab A100 Production Gate (B1.2 Full Training)", flush=True)
+    print(f"  • Dataset Dir        : {dataset_dir}", flush=True)
+    print(f"  • Output Dir         : {output_dir}", flush=True)
+    print(f"  • Kaggle Report      : {kaggle_report_path}", flush=True)
+    print(f"  • Colab T4 Report    : {colab_t4_report_path}", flush=True)
+    print(f"  • Precision          : bf16", flush=True)
+    print("=================================================================", flush=True)
+
+    # 1. Hardware Verification (Fail-Closed: Single A100 on cuda:0)
+    if not mock:
+        hw_profile = verify_device_contract(COLAB_A100_CONTRACT, allow_debug=allow_non_a100)
+        gpu_name = hw_profile.device_names[0] if hw_profile.device_names else "NVIDIA A100"
+        device_count = hw_profile.device_count
+    else:
+        gpu_name = "Mock NVIDIA A100"
+        device_count = 1
+
+    # 2. Git SHA Invariance
+    actual_sha = assert_exact_git_sha(expected_sha, repo_root=REPO_ROOT, is_production=not mock)
+
+    # 3. Canonical Dataset Fingerprint Verification (Fail-Closed)
+    if not mock:
+        ds_result = verify_dataset_fingerprint(dataset_dir)
+        manifest_sha256 = ds_result.manifest_sha256
+    else:
+        manifest_sha256 = "mock_manifest_sha256"
+
+    # 4. Config Fingerprints
+    algo_sha256 = fingerprint_structured_config(algorithm_config_path)
+    runtime_sha256 = fingerprint_structured_config(runtime_profile_path)
+
+    # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 & Colab Single-T4)
+    k_path = Path(kaggle_report_path)
+    c_path = Path(colab_t4_report_path)
+    if not k_path.is_file():
+        raise RuntimeError(f"Kaggle T4x2 report missing: {k_path}. Upstream Gate B1.1 required before A100.")
+    if not c_path.is_file():
+        raise RuntimeError(f"Colab T4 report missing: {c_path}. Upstream Gate B1.15 required before A100.")
+
+    kaggle_report = json.loads(k_path.read_text(encoding="utf-8"))
+    colab_t4_report = json.loads(c_path.read_text(encoding="utf-8"))
+
+    if not mock:
+        gate_chain_res = verify_prior_gate_reports(
+            kaggle_report=kaggle_report,
+            colab_t4_report=colab_t4_report,
+            expected_sha=actual_sha,
+            expected_dataset_hash=manifest_sha256,
+            expected_config_hash=algo_sha256,
+        )
+        k_rep_hash = gate_chain_res.kaggle_report_sha256
+        c_rep_hash = gate_chain_res.colab_t4_report_sha256
+    else:
+        k_rep_hash = "mock_k_hash"
+        c_rep_hash = "mock_c_hash"
+
+    # 6. Full Training Execution
+    if mock:
+        print("[*] Executing mock A100 production training and artifact generation...", flush=True)
+        adapter_dir.mkdir(parents=True, exist_ok=True)
+        (adapter_dir / "adapter_config.json").write_text(json.dumps({"r": 16, "base_model": "BAAI/bge-reranker-v2-m3"}), encoding="utf-8")
+        (adapter_dir / "adapter_model.safetensors").write_bytes(b"MOCK_A100_ADAPTER_WEIGHTS")
+
+        sub_dict = {f"q_{i}": [f"10{j}" for j in range(1, 4)] for i in range(1000)}
+        sub_json_str = json.dumps(sub_dict, indent=2)
+        with zipfile.ZipFile(submission_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("submission.json", sub_json_str)
+    else:
+        from src.pipeline.kaggle_train import run_kaggle_pipeline
+        print("[*] Launching authoritative full 7,000-query A100 pipeline with BF16...", flush=True)
+        res = run_kaggle_pipeline(
+            data_dir=str(dataset_dir),
+            working_dir=str(output_dir),
+            run_mode="full",
+            device_contract=COLAB_A100_CONTRACT,
+            precision="bf16",
+            repo_root=str(REPO_ROOT),
+            allow_nonstandard_production_devices=allow_non_a100,
+        )
+        print(f"[+] Pipeline completed with status: {res.status}", flush=True)
+
+    # 7. Validate Submission.zip
+    print(f"[*] Validating submission package: {submission_zip} ...", flush=True)
+    is_sub_valid, sub_msg = validate_submission_zip(submission_zip)
+    if not is_sub_valid:
+        raise RuntimeError(f"Submission validation failed: {sub_msg}")
+    print(f"[+] Submission validation PASSED: {sub_msg}", flush=True)
+
+    # 8. Generate File Checksums
+    checksums: dict[str, str] = {}
+    for p in output_dir.rglob("*"):
+        if p.is_file() and p.name not in ("checksums.sha256", "run_manifest.json"):
+            rel_name = str(p.relative_to(output_dir))
+            checksums[rel_name] = compute_file_sha256(p)
+
+    checksums_file = output_dir / "checksums.sha256"
+    checksums_lines = [f"{sha}  {fname}" for fname, sha in sorted(checksums.items())]
+    checksums_file.write_text("\n".join(checksums_lines) + "\n", encoding="utf-8")
+
+    # 9. Build Initial Run Manifest
+    manifest = {
+        "schema_version": 3,
+        "run_id": f"task1-{time.strftime('%Y%m%d-%H%M%S')}-{actual_sha[:7]}",
+        "stage": "B1.2_COLAB_A100_PRODUCTION_RUN",
+        "gate": "COLAB_A100",
+        "status": "COMPLETED",
+        "verdict": "PASS",
+        "git_sha": actual_sha,
+        "dataset": {
+            "slug": "phucdangg/legalir-task1-clean-data",
+            "logical_version": "v2",
+            "manifest_sha256": manifest_sha256,
+        },
+        "algorithm_config_sha256": algo_sha256,
+        "runtime_profile_sha256": runtime_sha256,
+        "base_models": {
+            "reranker_id": "BAAI/bge-reranker-v2-m3",
+            "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+            "dense_id": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        },
+        "gates": {
+            "kaggle_t4x2": {"verdict": "PASS", "report_sha256": k_rep_hash},
+            "colab_t4": {"verdict": "PASS", "report_sha256": c_rep_hash},
+        },
+        "hardware": {
+            "gpu": gpu_name,
+            "device_count": device_count,
+            "precision": "bf16",
+        },
+        "checksums": checksums,
+        "elapsed_seconds": round(time.time() - t0, 2),
+    }
+
+    run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+    # 10. Hugging Face Release Upload & Immutable Revision Capture
+    target_hf_repo = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
+    hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo)
+    if hf_commit:
+        manifest["status"] = "RELEASED"
+        manifest["huggingface"] = {
+            "repo_id": target_hf_repo,
+            "commit_sha": hf_commit,
+            "uploaded": True,
+        }
+        # Re-save manifest with confirmed commit and re-upload manifest
+        run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi(token=os.environ.get("HF_TOKEN"))
+            api.upload_file(
+                path_or_fileobj=str(run_manifest_path),
+                path_in_repo="run_manifest.json",
+                repo_id=target_hf_repo,
+                commit_message=f"Update final release manifest with commit {hf_commit[:8]}",
+            )
+        except Exception:
+            pass
+
+    print("=================================================================", flush=True)
+    print(f"[+] A100 Production Run Completed: {run_manifest_path}", flush=True)
+    print(f"    Status: {manifest['status']} | Verdict: {manifest['verdict']}", flush=True)
+    print("=================================================================", flush=True)
+    return manifest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="LegalIR Colab A100 Production Gate Runner")
+    parser.add_argument("--dataset-dir", type=str, default="/content/kaggle_dataset", help="Canonical dataset path")
+    parser.add_argument("--output-dir", type=str, default="artifacts/task1/production", help="Output directory")
+    parser.add_argument("--expected-sha", type=str, default="", help="Expected 40-char commit SHA")
+    parser.add_argument("--kaggle-report", type=str, default="artifacts/task1/gates/kaggle_t4x2_report.json", help="Path to Kaggle dual-T4 report")
+    parser.add_argument("--colab-t4-report", type=str, default="artifacts/task1/gates/colab_t4_report.json", help="Path to Colab single-T4 report")
+    parser.add_argument("--allow-non-a100", action="store_true", help="Allow running on non-A100 GPU for testing")
+    parser.add_argument("--mock", action="store_true", help="Run in mock mode (CPU testing only)")
+    parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker", help="Hugging Face repo ID")
+    args = parser.parse_args()
+
+    try:
+        run_a100_production_gate(
+            dataset_dir=args.dataset_dir,
+            output_dir=args.output_dir,
+            expected_sha=args.expected_sha,
+            kaggle_report_path=args.kaggle_report,
+            colab_t4_report_path=args.colab_t4_report,
+            allow_non_a100=args.allow_non_a100,
+            mock=args.mock,
+            hf_repo=args.hf_repo,
+        )
+        return 0
+    except Exception as exc:
+        print(f"[!] FAILED: Colab A100 Production Gate: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

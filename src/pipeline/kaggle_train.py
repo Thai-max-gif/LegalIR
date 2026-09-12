@@ -162,6 +162,59 @@ def resolve_kaggle_devices(devices: list[str] | None = None) -> tuple[str, str]:
         return "cpu", "cpu"
 
 
+def resolve_pipeline_device_allocation(
+    device_contract: Any | None = None,
+    run_mode: str = "full",
+    devices: list[str] | None = None,
+    dense_device: str | None = None,
+    reranker_device: str | None = None,
+    allow_nonstandard_production_devices: bool = False,
+) -> tuple[str, str]:
+    """
+    Resolve and validate device allocation based on a DeviceContract or defaults.
+    If device_contract is provided, enforces its constraints (min_cuda_devices, placement, accelerator_contains).
+    """
+    from src.models.device import resolve_device
+
+    is_smoke = str(run_mode).lower() == "smoke"
+    is_gpu_smoke = str(run_mode).lower() == "gpu_smoke"
+    is_full = str(run_mode).lower() == "full"
+
+    if is_smoke:
+        return "cpu", "cpu"
+
+    if device_contract is not None:
+        from src.release.contracts import verify_device_contract
+        verify_device_contract(device_contract, allow_debug=allow_nonstandard_production_devices)
+        d_dev = dense_device or device_contract.dense_device
+        r_dev = reranker_device or device_contract.reranker_device
+        return resolve_device(d_dev), resolve_device(r_dev)
+
+    if (is_gpu_smoke or is_full) and not allow_nonstandard_production_devices:
+        if not torch.cuda.is_available():
+            raise RuntimeError(f"{run_mode} mode requires CUDA but torch.cuda.is_available() is False")
+        if torch.cuda.device_count() < 2:
+            raise RuntimeError(
+                f"{run_mode} mode requires Kaggle T4 x2 / >=2 CUDA devices (found {torch.cuda.device_count()} device(s))"
+            )
+
+    if dense_device is None or reranker_device is None:
+        d_dev_def, r_dev_def = resolve_kaggle_devices(devices)
+        dense_device = dense_device or d_dev_def
+        reranker_device = reranker_device or r_dev_def
+
+    dense_device = resolve_device(dense_device)
+    reranker_device = resolve_device(reranker_device)
+
+    if (is_gpu_smoke or is_full) and not allow_nonstandard_production_devices:
+        if dense_device != "cuda:0":
+            raise RuntimeError(f"{run_mode} mode requires dense_device == 'cuda:0', got '{dense_device}'")
+        if reranker_device != "cuda:1":
+            raise RuntimeError(f"{run_mode} mode requires reranker_device == 'cuda:1', got '{reranker_device}'")
+
+    return dense_device, reranker_device
+
+
 def get_git_commit(repo_root: Path | None = None) -> str:
     """Retrieve Git commit SHA safely."""
     try:
@@ -789,6 +842,8 @@ def run_kaggle_pipeline(
     repo_root: str | Path | None = None,
     dense_device: str | None = None,
     reranker_device: str | None = None,
+    device_contract: Any | None = None,
+    precision: str | None = None,
     strict_artifacts: bool | None = None,
     allow_nonstandard_production_devices: bool = False,
 ) -> KaggleRunResult:
@@ -878,35 +933,14 @@ def run_kaggle_pipeline(
         raise FileNotFoundError(f"{run_mode_str} mode requires official public-official.json; refusing to proceed")
 
     # 3. Hardware and GPU Device Allocation (P1.10)
-    if (is_gpu_smoke or is_full) and not allow_nonstandard_production_devices:
-        if not torch.cuda.is_available():
-            raise RuntimeError(f"{run_mode_str} mode requires CUDA but torch.cuda.is_available() is False")
-        if torch.cuda.device_count() < 2:
-            raise RuntimeError(
-                f"{run_mode_str} mode requires Kaggle T4 x2 / >=2 CUDA devices (found {torch.cuda.device_count()} device(s))"
-            )
-
-    from src.models.device import resolve_device
-
-    if dense_device is None or reranker_device is None:
-        d_dev, r_dev = resolve_kaggle_devices(devices)
-        if dense_device is None:
-            dense_device = d_dev
-        if reranker_device is None:
-            reranker_device = r_dev
-
-    if not is_smoke:
-        dense_device = resolve_device(dense_device)
-        reranker_device = resolve_device(reranker_device)
-    else:
-        dense_device = "cpu"
-        reranker_device = "cpu"
-
-    if (is_gpu_smoke or is_full) and not allow_nonstandard_production_devices:
-        if dense_device != "cuda:0":
-            raise RuntimeError(f"{run_mode_str} mode requires dense_device == 'cuda:0', got '{dense_device}'")
-        if reranker_device != "cuda:1":
-            raise RuntimeError(f"{run_mode_str} mode requires reranker_device == 'cuda:1', got '{reranker_device}'")
+    dense_device, reranker_device = resolve_pipeline_device_allocation(
+        device_contract=device_contract,
+        run_mode=run_mode_str,
+        devices=devices,
+        dense_device=dense_device,
+        reranker_device=reranker_device,
+        allow_nonstandard_production_devices=allow_nonstandard_production_devices,
+    )
 
     print(f"[+] Device Allocation (P1.10 Multi-GPU Utilization):")
     print(f"    - Dense Embedding & Question Encoding : {dense_device}")
@@ -1376,6 +1410,7 @@ def run_kaggle_pipeline(
         max_steps=max_final_steps,
         base_model_name="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
         device=reranker_device,
+        precision=precision,
         enforce_full_coverage_steps=is_full,
     )
     final_training_time = max(0.001, time.perf_counter() - t_tr0)
@@ -1569,10 +1604,10 @@ def run_kaggle_pipeline(
             except Exception:
                 reranker_actual_dev = str(getattr(pipeline.reranker, "device", "cpu"))
 
-    if (is_gpu_smoke or is_full) and not allow_nonstandard_production_devices and torch.cuda.is_available() and torch.cuda.device_count() >= 2:
-        if dense_device == "cuda:0" and not dense_actual_dev.startswith("cuda:0"):
+    if (is_gpu_smoke or is_full) and not allow_nonstandard_production_devices and torch.cuda.is_available():
+        if not dense_actual_dev.startswith(dense_device):
             raise RuntimeError(f"Dense model device mismatch in {run_mode_str.upper()}: requested {dense_device}, actual {dense_actual_dev}")
-        if reranker_device == "cuda:1" and not reranker_actual_dev.startswith("cuda:1"):
+        if not reranker_actual_dev.startswith(reranker_device):
             raise RuntimeError(f"Reranker model device mismatch in {run_mode_str.upper()}: requested {reranker_device}, actual {reranker_actual_dev}")
 
     if is_gpu_smoke or is_full:

@@ -1,0 +1,15 @@
+runtime:
+  accelerator: "T4x2"
+  required_cuda_devices: 2
+  dense_device: "cuda:0"
+  reranker_device: "cuda:1"
+  num_workers: 2
+
+training:
+  precision: "fp16"
+  batch_size: 4
+  gradient_accumulation_steps: 4
+
+smoke:
+  sample_queries: 50
+  optimizer_steps: 3

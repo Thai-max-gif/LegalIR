@@ -49,7 +49,10 @@ jobs:
 
       - name: Run Modular Pytest Suite
         run: |
-          pytest -q tests/unit tests/dataset tests/notebook tests/parity tests/leakage tests/memory tests/integration tests/release
+          pytest -q tests/unit tests/contracts tests/dataset tests/notebook tests/parity tests/leakage tests/memory tests/integration tests/release
+
+      - name: Check No Forbidden Fallbacks
+        run: python scripts/check_no_fallbacks.py
 
       - name: Audit Learned Parameter Budget (< 4B)
         run: python scripts/audit_parameters.py

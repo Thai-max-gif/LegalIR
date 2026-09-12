@@ -1,0 +1,18 @@
+runtime:
+  accelerator: "A100"
+  required_cuda_devices: 1
+  dense_device: "cuda:0"
+  reranker_device: "cuda:0"
+  num_workers: 4
+
+training:
+  precision: "bf16"
+  batch_size: 8
+  gradient_accumulation_steps: 2
+  epochs: 3
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+
+submission:
+  max_answers: 5
+  min_answers: 1
