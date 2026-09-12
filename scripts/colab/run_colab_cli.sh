@@ -51,7 +51,7 @@ trap cleanup EXIT INT TERM
 echo "[1/4] Allocating Colab VM with ${NEW_FLAGS[*]}..."
 colab new -s "$SESSION" "${NEW_FLAGS[@]}"
 
-# 2. Upload local .env
+# 2. Upload local .env & gate prerequisites
 if [ -f ".env" ]; then
     echo "[2/4] Uploading local .env to /content/.env..."
     colab upload .env /content/.env -s "$SESSION"
@@ -59,11 +59,33 @@ else
     echo "[!] Warning: No local .env found. Secrets must be configured in Colab Secrets."
 fi
 
+if [ -f "artifacts/task1/gates/kaggle_t4x2_report.json" ]; then
+    echo "[*] Syncing Kaggle Dual-T4 report to /content/kaggle_t4x2_report.json..."
+    colab upload artifacts/task1/gates/kaggle_t4x2_report.json /content/kaggle_t4x2_report.json -s "$SESSION" || true
+fi
+
+if [ -f "artifacts/task1/gates/colab_t4_report.json" ]; then
+    echo "[*] Syncing Colab T4 report to /content/colab_t4_report.json..."
+    colab upload artifacts/task1/gates/colab_t4_report.json /content/colab_t4_report.json -s "$SESSION" || true
+fi
+
 # 3. Execute notebook
 echo "[3/4] Executing $NOTEBOOK on remote Colab VM..."
 colab exec -s "$SESSION" -f "$NOTEBOOK" --timeout 14400
 
-# 4. Status
+# 4. Download output artifacts before VM release
+echo "[4/4] Retrieving remote artifacts..."
+if [ "$GPU_MODE" = "T4" ]; then
+    mkdir -p artifacts/task1/gates
+    colab download /content/artifacts/task1/gates/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" || \
+    colab download /content/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" || true
+elif [ "$GPU_MODE" = "A100" ]; then
+    mkdir -p artifacts/task1/production
+    colab download /content/legalir_production_run/submission.zip artifacts/task1/production/submission.zip -s "$SESSION" || true
+    colab download /content/legalir_production_run/run_manifest.json artifacts/task1/production/run_manifest.json -s "$SESSION" || true
+    colab download /content/legalir_production_run/checksums.sha256 artifacts/task1/production/checksums.sha256 -s "$SESSION" || true
+fi
+
 echo ""
 echo "================================================================="
 echo "[+] Remote notebook execution completed successfully!"
