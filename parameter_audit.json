@@ -30,7 +30,7 @@
       "adapter_parameters": 0
     }
   },
-  "audit_timestamp_utc": "2026-09-12T04:43:25.117054+00:00",
+  "audit_timestamp_utc": "2026-09-12T04:46:23.903844+00:00",
   "rule_compliance": {
     "max_allowed_budget": 4000000000,
     "passed": true,
