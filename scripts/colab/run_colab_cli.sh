@@ -24,7 +24,7 @@ case "$GPU_MODE" in
     GPU="A100"
     NOTEBOOK="notebooks/colab_a100_train.ipynb"
     SESSION="legalir-a100-production"
-    NEW_FLAGS=("--gpu" "A100" "--high-mem")
+    NEW_FLAGS=("--gpu" "A100")
     ;;
   *)
     echo "[!] Error: Invalid GPU mode '$GPU_MODE'. Usage: $0 {T4|A100}" >&2
