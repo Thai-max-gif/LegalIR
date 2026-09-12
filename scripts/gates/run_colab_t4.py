@@ -113,10 +113,15 @@ def run_colab_t4_gate(
         adapter_reload_ok = True
     else:
         from src.pipeline.colab_smoke import run_colab_t4_smoke_pipeline, ColabSmokeConfig
-        smoke_cfg = ColabSmokeConfig(
-            device="cuda:0",
-            precision="fp16",
-        )
+        try:
+            smoke_cfg = ColabSmokeConfig(
+                device="cuda:0",
+                precision="fp16",
+            )
+        except TypeError:
+            smoke_cfg = ColabSmokeConfig(
+                device="cuda:0",
+            )
         res = run_colab_t4_smoke_pipeline(
             data_dir=dataset_dir,
             work_dir=output_dir,

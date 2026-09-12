@@ -71,6 +71,7 @@ ALLOWED_SMOKE_KEYS: tuple[str, ...] = (
     "reranker_batch_size",
     "device",
     "devices",
+    "precision",
     "output_dir",
     "work_dir",
     "data_dir",
@@ -144,6 +145,7 @@ class ColabSmokeConfig:
     dense_batch_size: int = 16
     reranker_batch_size: int = 8
     device: str = "cuda:0"
+    precision: str = "fp16"
     target_sha: str = ""
 
     @classmethod
