@@ -1,0 +1,16 @@
+{
+  "id": "phucdangg/legalir-training",
+  "title": "LegalIR training",
+  "code_file": "legalir_training.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "phucdangg/legalir-task1-clean-data"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

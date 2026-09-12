@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  preflight-and-test:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -41,6 +41,12 @@ jobs:
       - name: Compile Python Syntax
         run: python -m compileall -q src scripts
 
+      - name: Verify Core Imports
+        run: |
+          python -c "from src.pipeline.kaggle_train import run_kaggle_pipeline; print('PIPELINE_IMPORT_OK')"
+          python -c "from src.pipeline.oof_runner import OOFRunner; print('OOF_IMPORT_OK')"
+          python -c "from src.training.build_pairs import build_training_pairs; print('PAIR_IMPORT_OK')"
+
       - name: Run Modular Pytest Suite
         run: |
           pytest -q tests/unit tests/dataset tests/notebook tests/parity tests/leakage tests/memory tests/integration tests/release
@@ -48,11 +54,16 @@ jobs:
       - name: Audit Learned Parameter Budget (< 4B)
         run: python scripts/audit_parameters.py
 
-      - name: Check Notebooks Zero-Drift Parity
-        run: python scripts/generate_notebooks.py --check-drift
+      - name: Check Notebooks Parity
+        run: |
+          python scripts/check_notebook_parity.py
+          python scripts/generate_notebooks.py --check-drift
 
       - name: Verify Offline Kaggle Pipeline Smoke
         run: python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
+
+      - name: Verify Release Approval Gate
+        run: python scripts/verify_release_approval.py --repo-root . --allow-runtime-changes
 
       - name: Run Pre-Push Gate Verification
         run: python scripts/verify_prepush.py --skip-pipeline

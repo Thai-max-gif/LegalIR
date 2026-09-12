@@ -27,6 +27,15 @@ def compute_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_notebook_parity(
+    root_path: Path, kaggle_path: Path
+) -> tuple[bool, str, str]:
+    """Check parity between two specific notebook files."""
+    sha_root = compute_sha256(root_path)
+    sha_kaggle = compute_sha256(kaggle_path)
+    return sha_root == sha_kaggle, sha_root, sha_kaggle
+
+
 def check_all_notebook_parity(repo_root: Path = REPO_ROOT) -> tuple[bool, dict[str, str]]:
     """Check that notebooks exist and match generator output."""
     gen_script = repo_root / "scripts" / "generate_notebooks.py"

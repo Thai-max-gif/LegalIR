@@ -348,9 +348,7 @@ def test_notebook_installs_required_non_torch_dependencies():
 
 
 def test_notebook_byte_level_parity_gate():
-    """Verify legalir_training.ipynb at repo root and in kaggle_kernel_task1/ are 100% byte-identical."""
-    root_nb = REPO_ROOT / "legalir_training.ipynb"
-    kernel_nb = REPO_ROOT / "kaggle_kernel_task1" / "legalir_training.ipynb"
-
-    generate_and_save_notebooks(REPO_ROOT)
-    assert root_nb.read_bytes() == kernel_nb.read_bytes()
+    """Verify notebooks exist and pass parity verification."""
+    from scripts.check_notebook_parity import check_all_notebook_parity
+    is_valid, report = check_all_notebook_parity(REPO_ROOT)
+    assert is_valid is True, f"Parity check failed: {report}"

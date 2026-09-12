@@ -779,12 +779,7 @@ def test_pair_mining_uses_precomputed_query_embedding(mock_dataset_and_indexes, 
 # ==============================================================================
 
 def test_kaggle_notebook_byte_level_parity():
-    """Verify legalir_training.ipynb at repo root and kaggle_kernel_task1 are 100% byte-identical."""
-    root_nb = REPO_ROOT / "legalir_training.ipynb"
-    kernel_nb = REPO_ROOT / "kaggle_kernel_task1" / "legalir_training.ipynb"
-
-    generate_and_save_notebooks(REPO_ROOT)
-
-    assert root_nb.exists(), "Root legalir_training.ipynb missing"
-    assert kernel_nb.exists(), "Kernel legalir_training.ipynb missing"
-    assert root_nb.read_bytes() == kernel_nb.read_bytes(), "Notebooks are not byte-identical!"
+    """Verify notebooks exist and pass parity verification."""
+    from scripts.check_notebook_parity import check_all_notebook_parity
+    is_valid, report = check_all_notebook_parity(REPO_ROOT)
+    assert is_valid is True, f"Parity check failed: {report}"

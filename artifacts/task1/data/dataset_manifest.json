@@ -1,0 +1,68 @@
+{
+  "dataset": "task1_canonical",
+  "version": "v2",
+  "total_documents": 8532,
+  "total_chunks": 1153876,
+  "total_micro_chunks": 934416,
+  "total_macro_chunks": 219460,
+  "total_queries": 7000,
+  "total_qrels": 7637,
+  "total_duplicate_groups": 4,
+  "empty_documents_count": 20,
+  "schema": "hierarchical_micro_macro_v2",
+  "normalization": "nfc_whitespace_preserve_legal_ids",
+  "files": {
+    "audit_report.json": {
+      "size_bytes": 236,
+      "sha256": "00f10cde114ff1567c323d1846f2418baabb81e18608a205cb741f62fa067760"
+    },
+    "chunks.parquet": {
+      "size_bytes": 456814815,
+      "sha256": "cea5f34c37d276cb3349a752756b860e7e5d5fcdf080aabfb6741ec6debc740e"
+    },
+    "doc_disjoint_split.json": {
+      "size_bytes": 186948,
+      "sha256": "3fdb8fb60a5528bc5c58e536ad320d781d5ccc554901ec7b162271ff96274ffb"
+    },
+    "documents.parquet": {
+      "size_bytes": 313045018,
+      "sha256": "5a5ed31e0fed58f40a246480bede8e36770f844bf1d76dca38c340cb0d11723d"
+    },
+    "duplicate_groups.json": {
+      "size_bytes": 431,
+      "sha256": "f54755998b92045ee38d190a30a39239233b3a615ada358c5d739a6f9047a80a"
+    },
+    "empty_context_ids.json": {
+      "size_bytes": 236,
+      "sha256": "3b840d93db6c512359c10a57f7c12b6c9d636097c86dcb8db2b8ca7604209330"
+    },
+    "manifest.json": {
+      "size_bytes": 381,
+      "sha256": "d98c9727f17699d3a4dfdc473f1c3e6caa7e5fc3c1a9407570a9384377a4b90d"
+    },
+    "public-official.json": {
+      "size_bytes": 186517,
+      "sha256": "adaa250c5469a5ddb37c3875e0aa311cb4545f0a1710903a158b25d67b7f9d89"
+    },
+    "qrels_train.parquet": {
+      "size_bytes": 76614,
+      "sha256": "0da9d36de7bc8884d98a1c60ab9df30bbba0d63bbd3c97575712bf063a6f4e46"
+    },
+    "queries_train.parquet": {
+      "size_bytes": 877099,
+      "sha256": "41d91da682d608439c2e05ef1f58d9df1c4136e8009e1999a1e8bb40f3b49867"
+    },
+    "random_5fold.json": {
+      "size_bytes": 1074668,
+      "sha256": "84e4f0410fdd362faadf0141187067fe9393949a3e2bef80b6d47bb0a7c6cfb9"
+    },
+    "splits/doc_disjoint_split.json": {
+      "size_bytes": 186948,
+      "sha256": "3fdb8fb60a5528bc5c58e536ad320d781d5ccc554901ec7b162271ff96274ffb"
+    },
+    "splits/random_5fold.json": {
+      "size_bytes": 1074668,
+      "sha256": "84e4f0410fdd362faadf0141187067fe9393949a3e2bef80b6d47bb0a7c6cfb9"
+    }
+  }
+}

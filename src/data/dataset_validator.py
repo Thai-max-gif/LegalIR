@@ -130,21 +130,25 @@ def validate_dataset(root: str | Path) -> dict[str, Any]:
         optional_missing = sorted(set(ALIASES[kind]) - set(mapping) - REQUIRED_FIELDS[kind])
         if optional_missing:
             report["checks"].append({"name": f"{kind}_optional_fields", "status": "NOT_RUN", "reason": "not supplied by this release", "fields": optional_missing})
-    if not report["issues"]:
-        docs, chunks, queries, qrels = (paths[name] for name in ("documents", "chunks", "queries", "qrels"))
-        maps = report["column_mappings"]
-        doc_ids = _unique(docs, maps["documents"]["document_id"], report["issues"])
-        chunk_ids = _unique(chunks, maps["chunks"]["chunk_id"], report["issues"])
-        for doc_id in _values(chunks, maps["chunks"]["document_id"]):
-            if str(doc_id) not in doc_ids:
-                report["issues"].append({"file": str(chunks), "record": str(doc_id), "reason": "dangling chunk document_id"})
-        report["checks"].append({"name": "document_chunk_pk_fk", "status": "PASS" if not report["issues"] else "FAIL", "documents": len(doc_ids), "chunks": len(chunk_ids)})
-        query_ids = _unique(queries, maps["queries"]["query_id"], report["issues"])
-        for semantic, known in (("query_id", query_ids), ("document_id", doc_ids)):
-            for value in _values(qrels, maps["qrels"][semantic]):
-                if str(value) not in known:
-                    report["issues"].append({"file": str(qrels), "record": str(value), "reason": f"dangling qrels {semantic}"})
-        report["checks"].append({"name": "qrels_fk", "status": "PASS" if not report["issues"] else "FAIL"})
+    maps = report["column_mappings"]
+    doc_ids: set[str] = set()
+    if paths.get("documents") and paths.get("chunks") and "documents" in maps and "chunks" in maps:
+        if "document_id" in maps["documents"] and "chunk_id" in maps["chunks"] and "document_id" in maps["chunks"]:
+            doc_ids = _unique(paths["documents"], maps["documents"]["document_id"], report["issues"])
+            chunk_ids = _unique(paths["chunks"], maps["chunks"]["chunk_id"], report["issues"])
+            for doc_id in _values(paths["chunks"], maps["chunks"]["document_id"]):
+                if str(doc_id) not in doc_ids:
+                    report["issues"].append({"file": str(paths["chunks"]), "record": str(doc_id), "reason": "dangling document_id"})
+            report["checks"].append({"name": "document_chunk_pk_fk", "status": "PASS" if not any("chunk" in x.get("reason", "") for x in report["issues"]) else "FAIL", "documents": len(doc_ids), "chunks": len(chunk_ids)})
+
+    if paths.get("queries") and paths.get("qrels") and "queries" in maps and "qrels" in maps:
+        if "query_id" in maps["queries"] and "query_id" in maps["qrels"] and "document_id" in maps["qrels"]:
+            query_ids = _unique(paths["queries"], maps["queries"]["query_id"], report["issues"])
+            for semantic, known in (("query_id", query_ids), ("document_id", doc_ids)):
+                for value in _values(paths["qrels"], maps["qrels"][semantic]):
+                    if str(value) not in known:
+                        report["issues"].append({"file": str(paths["qrels"]), "record": str(value), "reason": f"dangling qrels {semantic}"})
+            report["checks"].append({"name": "qrels_fk", "status": "PASS" if not any("qrels" in x.get("reason", "") for x in report["issues"]) else "FAIL"})
     manifest = artifact_path(root, "dataset_manifest.json", "metadata") or artifact_path(root, "manifest.json")
     if manifest:
         try:
