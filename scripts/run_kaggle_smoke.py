@@ -82,12 +82,18 @@ def run_kaggle_smoke(
 
     # 1. Verify Dataset
     print(f"[*] Verifying dataset at: {dataset_dir}")
+    queries_p = dataset_dir / "queries_train.parquet"
+    if not queries_p.is_file() and mock:
+        print("[*] Canonical data not found in mock mode. Auto-generating toy dataset...")
+        from scripts.smoke_kaggle_pipeline import create_toy_canonical_dataset
+        dataset_dir = create_toy_canonical_dataset(output_dir / "toy_canonical")
+        queries_p = dataset_dir / "queries_train.parquet"
+
     is_valid, ident, ds_errors = verify_canonical_dataset(dataset_dir)
     if not is_valid:
         print(f"[!] Warning: Dataset validation reported errors: {ds_errors}")
 
     # 2. Select 50 deterministic queries
-    queries_p = dataset_dir / "queries_train.parquet"
     qrels_p = dataset_dir / "qrels_train.parquet"
     docs_p = dataset_dir / "documents.parquet"
 

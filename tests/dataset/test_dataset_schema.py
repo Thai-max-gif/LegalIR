@@ -6,7 +6,10 @@ from src.data.canonical import discover_canonical_dataset_dir
 
 @pytest.fixture
 def dataset_dir() -> Path:
-    return discover_canonical_dataset_dir()
+    d = discover_canonical_dataset_dir()
+    if not (d / "documents.parquet").is_file():
+        pytest.skip("Canonical parquet dataset not present in git checkout (published directly on Kaggle).")
+    return d
 
 
 def test_documents_schema(dataset_dir: Path):

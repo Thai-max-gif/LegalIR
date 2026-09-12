@@ -15,7 +15,10 @@ from src.data.canonical import (
 
 @pytest.fixture
 def dataset_dir() -> Path:
-    return discover_canonical_dataset_dir()
+    d = discover_canonical_dataset_dir()
+    if not (d / "documents.parquet").is_file():
+        pytest.skip("Canonical parquet dataset not present in git checkout (published directly on Kaggle).")
+    return d
 
 
 def test_record_counts(dataset_dir: Path):
