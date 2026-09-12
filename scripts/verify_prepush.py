@@ -88,7 +88,7 @@ def main() -> int:
     # 3. Parameter audit
     audit_script = REPO_ROOT / "scripts" / "audit_parameters.py"
     if audit_script.is_file():
-        if not run_gate([python_bin, str(audit_script)], "Learned parameter budget (< 4B)"):
+        if not run_gate([python_bin, str(audit_script), "--check-only"], "Learned parameter budget (< 4B)"):
             return 1
 
     # 4. Notebook zero-drift check

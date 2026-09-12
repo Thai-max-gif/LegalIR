@@ -44,6 +44,11 @@ def main() -> None:
         help="Output path for parameter_audit.json",
     )
     parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Audit without rewriting output JSON file (preserves git clean state)",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         default=True,
@@ -55,11 +60,12 @@ def main() -> None:
     print("LegalIR Task 1: Learned Parameter Budget Audit (<4B Rule)")
     print("=" * 65)
 
+    out_json = None if args.check_only else args.output_json
     try:
         report = audit_system_parameters(
             models=args.models,
             config_path=args.config,
-            output_json=args.output_json,
+            output_json=out_json,
             raise_on_violation=False,
             offline_fallback=True,
         )
