@@ -29,6 +29,9 @@ DEFAULT_WORKFLOW_NAME = "LegalIR CI"
 RELEASE_ONLY_DIFF_ALLOWLIST: tuple[str, ...] = (
     "artifacts/task1/colab_smoke_report.json",
     "artifacts/task1/release_approval.json",
+    "artifacts/task1/gates/kaggle_t4x2_report.json",
+    "artifacts/task1/gates/colab_t4_report.json",
+    "artifacts/task1/freeze/production_freeze.json",
     "parameter_audit.json",
     "scripts/generate_notebooks.py",
     "scripts/generate_kaggle_notebook.py",
@@ -38,6 +41,7 @@ RELEASE_ONLY_DIFF_ALLOWLIST: tuple[str, ...] = (
     "kaggle_kernel/legalir_training.ipynb",
     "kaggle_kernel/legalqa_gpu_pipeline.ipynb",
     "notebooks/kaggle_smoke.ipynb",
+    "notebooks/kaggle_t4x2_smoke.ipynb",
     "notebooks/colab_a100_train.ipynb",
     "notebooks/kaggle_final.ipynb",
     "notebooks/colab_t4_smoke.ipynb",
