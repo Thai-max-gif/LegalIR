@@ -20,6 +20,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 def get_current_git_commit(repo_root: Path = REPO_ROOT) -> str:
     """Get the current commit SHA from git or release approval."""
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root).decode("utf-8").strip()
+        if len(sha) == 40:
+            return sha.lower()
+    except Exception:
+        pass
     approval_p = repo_root / "artifacts" / "task1" / "release_approval.json"
     if approval_p.is_file():
         try:
@@ -29,12 +35,6 @@ def get_current_git_commit(repo_root: Path = REPO_ROOT) -> str:
                 return rt.strip().lower()
         except Exception:
             pass
-    try:
-        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root).decode("utf-8").strip()
-        if len(sha) == 40:
-            return sha.lower()
-    except Exception:
-        pass
     return "main"
 
 
