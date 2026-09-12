@@ -10,9 +10,9 @@ from src.ranking.evidence_pack import EvidencePackBuilder
 
 
 def test_legacy_positive_localizer_parity_on_official_sample():
-    chunks_p = Path("data/task1_canonical_v2/chunks.parquet")
-    queries_p = Path("data/task1_canonical_v2/queries_train.parquet")
-    qrels_p = Path("data/task1_canonical_v2/qrels_train.parquet")
+    chunks_p = Path("kaggle_dataset/chunks.parquet")
+    queries_p = Path("kaggle_dataset/queries_train.parquet")
+    qrels_p = Path("kaggle_dataset/qrels_train.parquet")
 
     if not (chunks_p.is_file() and queries_p.is_file() and qrels_p.is_file()):
         pytest.skip("Official canonical dataset not present.")
@@ -60,9 +60,9 @@ def test_legacy_positive_localizer_parity_on_official_sample():
 
 
 def test_legacy_evidence_pack_parity_on_official_sample():
-    chunks_p = Path("data/task1_canonical_v2/chunks.parquet")
-    queries_p = Path("data/task1_canonical_v2/queries_train.parquet")
-    docs_p = Path("data/task1_canonical_v2/documents.parquet")
+    chunks_p = Path("kaggle_dataset/chunks.parquet")
+    queries_p = Path("kaggle_dataset/queries_train.parquet")
+    docs_p = Path("kaggle_dataset/documents.parquet")
 
     if not (chunks_p.is_file() and queries_p.is_file() and docs_p.is_file()):
         pytest.skip("Official canonical dataset not present.")

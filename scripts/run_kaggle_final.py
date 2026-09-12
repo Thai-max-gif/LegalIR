@@ -27,7 +27,7 @@ from src.production.submission import package_submission, validate_submission
 
 def main():
     parser = argparse.ArgumentParser(description="Kaggle Final Production Runner.")
-    parser.add_argument("--dataset-dir", type=str, default="data/task1_canonical_v2")
+    parser.add_argument("--dataset-dir", type=str, default="kaggle_dataset")
     parser.add_argument("--bundle-dir", type=str, default="artifacts/bundle/production")
     parser.add_argument("--output-dir", type=str, default="artifacts/submission")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode for testing")

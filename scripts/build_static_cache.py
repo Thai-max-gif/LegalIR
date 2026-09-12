@@ -212,7 +212,7 @@ def main():
     parser.add_argument(
         "--dataset-dir",
         type=str,
-        default="data/task1_canonical_v2",
+        default="kaggle_dataset",
         help="Path to canonical dataset directory",
     )
     parser.add_argument(
