@@ -117,6 +117,16 @@ def build_kaggle_smoke_notebook(commit_sha: str) -> dict:
             "        prop = torch.cuda.get_device_properties(i)\n",
             "        vram = prop.total_memory / (1024**3)\n",
             "        print(f\"    - GPU {i}: {prop.name} | Total VRAM: {vram:.2f} GB\")\n",
+            "\n",
+            "# Securely load HF_TOKEN from Kaggle Secrets if configured (Never hardcode tokens)\n",
+            "try:\n",
+            "    from kaggle_secrets import UserSecretsClient\n",
+            "    hf_token = UserSecretsClient().get_secret('HF_TOKEN')\n",
+            "    if hf_token:\n",
+            "        os.environ['HF_TOKEN'] = hf_token\n",
+            "        print('[+] HF_TOKEN loaded securely from Kaggle Secrets.')\n",
+            "except Exception:\n",
+            "    pass\n",
         ],
     }
     cells.append(cell_1)
@@ -305,6 +315,16 @@ def build_colab_train_notebook(commit_sha: str) -> dict:
             "\n",
             "if \"A100\" not in gpu_name:\n",
             "    print(f\"[!] WARNING: Expected NVIDIA A100, found {gpu_name}. Ensure Colab Premium A100 runtime is selected.\")\n",
+            "\n",
+            "# Securely load HF_TOKEN from Colab Secrets if configured (Never hardcode tokens)\n",
+            "try:\n",
+            "    from google.colab import userdata\n",
+            "    hf_token = userdata.get('HF_TOKEN')\n",
+            "    if hf_token:\n",
+            "        os.environ['HF_TOKEN'] = hf_token\n",
+            "        print('[+] HF_TOKEN loaded securely from Colab Secrets.')\n",
+            "except Exception:\n",
+            "    pass\n",
         ],
     }
     cells.append(cell_1)
