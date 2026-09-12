@@ -138,11 +138,13 @@ def run_colab_production_training(
         from src.pipeline.kaggle_train import run_kaggle_pipeline
         result = run_kaggle_pipeline(
             data_dir=str(dataset_dir),
-            output_dir=str(output_dir),
+            working_dir=str(output_dir),
             run_mode=run_mode,
-            skip_doc_disjoint=False,
+            allow_nonstandard_production_devices=allow_non_a100,
         )
         print(f"[+] Pipeline completed. Submission: {result.submission_path}")
+        if result.submission_zip_path.is_file():
+            submission_zip = result.submission_zip_path
 
     # 5. Build run_manifest.json
     target_hf_repo = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
