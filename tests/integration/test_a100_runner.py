@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from scripts.gates.run_a100 import run_a100_production_gate
-from src.release.fingerprints import generate_dataset_manifest, fingerprint_structured_config
+from src.release.fingerprints import generate_dataset_manifest, fingerprint_structured_config, get_git_head_sha
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def a100_test_fixtures(tmp_path: Path) -> dict[str, Path]:
 
     algo_cfg_path = Path(__file__).resolve().parent.parent.parent / "configs" / "algorithm" / "legalir_v2.yaml"
     algo_hash = fingerprint_structured_config(algo_cfg_path)
-    valid_sha = "718efb7ba4565fa5b863f05927122484f8e58c2f"
+    valid_sha = get_git_head_sha()
 
     # Upstream reports
     k_report = {

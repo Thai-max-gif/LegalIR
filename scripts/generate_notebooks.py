@@ -21,13 +21,27 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def get_current_git_commit(repo_root: Path = REPO_ROOT) -> str:
-    """Get the current commit SHA from git HEAD."""
-    try:
-        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root).decode("utf-8").strip()
-        if len(sha) == 40:
-            return sha.lower()
-    except Exception:
-        pass
+    """Get the approved runtime commit SHA from freeze file, approval file, or baseline."""
+    freeze_p = repo_root / "artifacts" / "task1" / "freeze" / "production_freeze.json"
+    if freeze_p.is_file():
+        try:
+            data = json.loads(freeze_p.read_text(encoding="utf-8"))
+            rt = data.get("git_sha")
+            if rt and len(rt) == 40:
+                return rt.strip().lower()
+        except Exception:
+            pass
+
+    approval_p = repo_root / "artifacts" / "task1" / "release_approval.json"
+    if approval_p.is_file():
+        try:
+            data = json.loads(approval_p.read_text(encoding="utf-8"))
+            rt = data.get("runtime_sha")
+            if rt and len(rt) == 40:
+                return rt.strip().lower()
+        except Exception:
+            pass
+
     return "718efb7ba4565fa5b863f05927122484f8e58c2f"
 
 

@@ -54,11 +54,11 @@ def mock_dataset_and_kaggle_report(tmp_path: Path) -> tuple[Path, Path]:
     (data_dir / "dataset_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     # Kaggle report
-    from src.release.fingerprints import fingerprint_structured_config
+    from src.release.fingerprints import fingerprint_structured_config, get_git_head_sha
     algo_cfg_path = Path(__file__).resolve().parent.parent.parent / "configs" / "algorithm" / "legalir_v2.yaml"
     algo_hash = fingerprint_structured_config(algo_cfg_path)
 
-    valid_sha = "718efb7ba4565fa5b863f05927122484f8e58c2f"
+    valid_sha = get_git_head_sha()
     kaggle_report = {
         "stage": "KAGGLE_T4X2",
         "verdict": "PASS",
