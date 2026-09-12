@@ -244,6 +244,14 @@ def discover_canonical_dataset_dir(preferred_path: Union[str, Path, None] = None
         if (p / "documents.parquet").is_file() or (p / "canonical" / "documents.parquet").is_file():
             return p
 
+    # Dynamic search under /kaggle/input if running on Kaggle
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.is_dir():
+        for doc_file in kaggle_input.rglob("documents.parquet"):
+            if doc_file.parent.name == "canonical":
+                return doc_file.parent
+            return doc_file.parent
+
     candidates = [
         Path("/kaggle/input/datasets/phucdangg/legalir-task1-clean-data"),
         Path("/kaggle/input/legalir-task1-clean-data"),
