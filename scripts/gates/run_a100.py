@@ -53,9 +53,18 @@ def upload_artifacts_to_huggingface(
     token: str | None = None,
 ) -> str | None:
     """Upload production artifacts to Hugging Face Hub and return the commit SHA."""
-    token = token or os.environ.get("HF_TOKEN")
+    # Robust token resolution: prefer explicit token, then write token, then standard token
+    if not token or not token.startswith("hf_"):
+        candidates = [
+            token,
+            os.environ.get("HF_TOKEN_WRITE"),
+            os.environ.get("HF_TOKEN"),
+            os.environ.get("HF_TOKEN_READ"),
+        ]
+        token = next((t for t in candidates if t and str(t).startswith("hf_")), None)
+
     if not token:
-        print("[!] Note: No HF_TOKEN found in environment. Skipping Hugging Face auto-upload.", flush=True)
+        print("[!] Note: No valid Hugging Face token (starting with 'hf_') found in environment. Skipping auto-upload.", flush=True)
         return None
 
     repo_id = repo_id or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
