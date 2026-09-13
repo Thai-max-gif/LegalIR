@@ -156,8 +156,38 @@ def run_a100_production_gate(
         pass
 
     # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 & Colab Single-T4)
-    k_path = Path(kaggle_report_path)
-    c_path = Path(colab_t4_report_path)
+    if kaggle_report_path:
+        k_p = Path(kaggle_report_path)
+        if k_p.is_file():
+            k_path = k_p
+        elif str(k_p) not in (str(REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json"), "artifacts/task1/gates/kaggle_t4x2_report.json"):
+            raise RuntimeError(f"Kaggle T4x2 report missing: {k_p}. Upstream Gate B1.1 required before A100.")
+        else:
+            k_cands = [
+                Path("/content/kaggle_t4x2_report.json"),
+                Path("/content/LegalIR/artifacts/task1/gates/kaggle_t4x2_report.json"),
+                REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json",
+            ]
+            k_path = next((p for p in k_cands if p and p.is_file()), k_p)
+    else:
+        k_path = REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json"
+
+    if colab_t4_report_path:
+        c_p = Path(colab_t4_report_path)
+        if c_p.is_file():
+            c_path = c_p
+        elif str(c_p) not in (str(REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json"), "artifacts/task1/gates/colab_t4_report.json"):
+            raise RuntimeError(f"Colab T4 report missing: {c_p}. Upstream Gate B1.15 required before A100.")
+        else:
+            c_cands = [
+                Path("/content/colab_t4_report.json"),
+                Path("/content/LegalIR/artifacts/task1/gates/colab_t4_report.json"),
+                REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
+            ]
+            c_path = next((p for p in c_cands if p and p.is_file()), c_p)
+    else:
+        c_path = REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json"
+
     if not k_path.is_file():
         raise RuntimeError(f"Kaggle T4x2 report missing: {k_path}. Upstream Gate B1.1 required before A100.")
     if not c_path.is_file():
@@ -191,7 +221,13 @@ def run_a100_production_gate(
         pass
 
     # Cross-verify and copy production_freeze.json if present
-    freeze_path = Path(freeze_file_path)
+    freeze_cands = [
+        Path(freeze_file_path) if freeze_file_path else None,
+        Path("/content/production_freeze.json"),
+        Path("/content/LegalIR/artifacts/task1/freeze/production_freeze.json"),
+        REPO_ROOT / "artifacts" / "task1" / "freeze" / "production_freeze.json",
+    ]
+    freeze_path = next((p for p in freeze_cands if p and p.is_file()), Path(freeze_file_path))
     if freeze_path.is_file():
         try:
             freeze_data = json.loads(freeze_path.read_text(encoding="utf-8"))
