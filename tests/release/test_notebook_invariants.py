@@ -8,7 +8,7 @@ def test_notebook_invariants_no_secrets():
     # Test helper that audits all notebooks for exposed secrets or hardcoded tokens
     forbidden_tokens = ["ghp_", "sk-", "AIzaSy", "password", "SECRET_KEY"]
     for nb_path in [
-        Path("notebooks/kaggle_smoke.ipynb"),
+        Path("notebooks/kaggle_t4x2_smoke.ipynb"),
         Path("notebooks/colab_a100_train.ipynb"),
     ]:
         if nb_path.is_file():
@@ -18,7 +18,7 @@ def test_notebook_invariants_no_secrets():
 
 
 def test_kaggle_notebook_pin_contains_new_runtime_full_sha():
-    nb_path = Path("notebooks/kaggle_smoke.ipynb")
+    nb_path = Path("notebooks/kaggle_t4x2_smoke.ipynb")
     assert nb_path.is_file(), f"Missing {nb_path}"
 
     raw_text = nb_path.read_text(encoding="utf-8")
@@ -30,7 +30,7 @@ def test_kaggle_notebook_pin_contains_new_runtime_full_sha():
 
 
 def test_kaggle_notebook_target_script_exists_at_pin():
-    nb_path = Path("notebooks/kaggle_smoke.ipynb")
+    nb_path = Path("notebooks/kaggle_t4x2_smoke.ipynb")
     raw_text = nb_path.read_text(encoding="utf-8")
     assert "scripts/run_kaggle_smoke.py" in raw_text
     assert Path("scripts/run_kaggle_smoke.py").is_file()

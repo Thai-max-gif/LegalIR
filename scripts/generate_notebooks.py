@@ -2,9 +2,8 @@
 """
 Unified Generator for LegalIR Competition Notebooks:
 1. notebooks/kaggle_t4x2_smoke.ipynb (Kaggle 2xT4 CUDA Smoke Gate B1.1)
-2. notebooks/kaggle_smoke.ipynb (Compatibility alias for B1.1)
-3. notebooks/colab_t4_smoke.ipynb (Colab Single-T4 Contract Smoke Gate)
-4. notebooks/colab_a100_train.ipynb (Colab A100 Production Training B1.2)
+2. notebooks/colab_t4_smoke.ipynb (Colab Single-T4 Contract Smoke Gate)
+3. notebooks/colab_a100_train.ipynb (Colab A100 Production Training B1.2)
 
 Supports --check-drift to verify committed notebooks match generator output.
 """
@@ -769,7 +768,6 @@ def main() -> int:
 
     targets = {
         notebooks_dir / "kaggle_t4x2_smoke.ipynb": build_kaggle_smoke_notebook(commit_sha),
-        notebooks_dir / "kaggle_smoke.ipynb": build_kaggle_smoke_notebook(commit_sha),
         notebooks_dir / "colab_t4_smoke.ipynb": build_colab_t4_smoke_notebook(commit_sha),
         notebooks_dir / "colab_a100_train.ipynb": build_colab_train_notebook(commit_sha),
     }

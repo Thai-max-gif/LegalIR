@@ -12,7 +12,7 @@ Local Pre-Push Gate (python scripts/verify_prepush.py)
 GitHub Actions CI (PASS)
              │
              ▼
-Kaggle 2×T4 Smoke Gate (notebooks/kaggle_smoke.ipynb -> PASS)
+Kaggle 2×T4 Smoke Gate (notebooks/kaggle_t4x2_smoke.ipynb -> PASS)
              │
              ▼
 Freeze Run Tuple (Git SHA + Dataset Hash + Smoke Report)
@@ -46,7 +46,7 @@ This executes:
 
 ### Stage 2: Kaggle 2×T4 Smoke Gate (B1.1)
 1. **Open Notebook on Kaggle**:
-   - URL: `https://www.kaggle.com/code/phucdangg/legalir-training` (or upload `notebooks/kaggle_t4x2_smoke.ipynb`, alias `notebooks/kaggle_smoke.ipynb`).
+   - URL: `https://www.kaggle.com/code/phucdangg/legalir-training` (or upload `notebooks/kaggle_t4x2_smoke.ipynb`).
 2. **Attach Dataset**:
    - Kaggle Dataset: `phucdangg/legalir-task1-clean-data` (attached at `/kaggle/input/datasets/phucdangg/legalir-task1-clean-data` or `/kaggle/input/legalir-task1-clean-data`).
 3. **Accelerator**:

@@ -8,16 +8,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DISTRIBUTED_FINAL_NOTEBOOKS = [
     REPO_ROOT / "notebooks" / "kaggle_t4x2_smoke.ipynb",
-    REPO_ROOT / "notebooks" / "kaggle_smoke.ipynb",
     REPO_ROOT / "notebooks" / "colab_t4_smoke.ipynb",
     REPO_ROOT / "notebooks" / "colab_a100_train.ipynb",
 ]
 
 
 def test_all_canonical_notebooks_use_dedicated_runners():
-    assert (REPO_ROOT / "notebooks" / "kaggle_smoke.ipynb").is_file()
+    assert (REPO_ROOT / "notebooks" / "kaggle_t4x2_smoke.ipynb").is_file()
     assert (REPO_ROOT / "notebooks" / "colab_a100_train.ipynb").is_file()
-    kaggle_txt = (REPO_ROOT / "notebooks" / "kaggle_smoke.ipynb").read_text(encoding="utf-8")
+    kaggle_txt = (REPO_ROOT / "notebooks" / "kaggle_t4x2_smoke.ipynb").read_text(encoding="utf-8")
     colab_txt = (REPO_ROOT / "notebooks" / "colab_a100_train.ipynb").read_text(encoding="utf-8")
     assert "run_kaggle_t4x2" in kaggle_txt or "run_kaggle_smoke" in kaggle_txt
     assert "run_a100" in colab_txt or "run_colab_train" in colab_txt

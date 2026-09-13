@@ -75,5 +75,5 @@ Query (Vietnamese Legal Question)
 | :--- | :--- | :--- |
 | **Kaggle Dataset (`phucdangg/legalir-task1-clean-data`)** | Canonical Parquet tables (`documents`, `chunks`, `queries_train`, `qrels_train`, `public-official.json`, `splits/`, `manifest.json`). Zero heavy data in Git. | Data Owner (A1) |
 | **GitHub (`silent9669/LegalIR`)** | Source code (`src/`), notebooks (`notebooks/`), configs (`configs/`), test suites (`tests/`), CI/CD workflows. | Training Owner (B1) |
-| **Kaggle Notebook (`notebooks/kaggle_smoke.ipynb`)** | Fast 3-minute CUDA smoke gate (B1.1) on Tesla T4 / 2×T4 GPU. Outputs `kaggle_smoke_report.json`. | Training Owner (B1) |
+| **Kaggle Notebook (`notebooks/kaggle_t4x2_smoke.ipynb`)** | Fast 3-minute CUDA smoke gate (B1.1) on Tesla T4 / 2×T4 GPU. Outputs `kaggle_t4x2_report.json`. | Training Owner (B1) |
 | **Google Colab Notebook (`notebooks/colab_a100_train.ipynb`)** | Full production training (B1.2) on NVIDIA A100 with BF16 precision. Exports model to Hugging Face. | Training Owner (B1) |
