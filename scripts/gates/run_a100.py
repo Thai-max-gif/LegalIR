@@ -47,6 +47,17 @@ from src.release.fingerprints import (
 from src.evaluation.submission import validate_submission_zip
 
 
+def resolve_hf_token(explicit: str | None = None) -> str | None:
+    """Resolve a Hugging Face token preferring write-capable tokens."""
+    candidates = [
+        explicit,
+        os.environ.get("HF_TOKEN_WRITE"),
+        os.environ.get("HF_TOKEN"),
+        os.environ.get("HF_TOKEN_READ"),
+    ]
+    return next((t for t in candidates if t and str(t).startswith("hf_")), None)
+
+
 def upload_artifacts_to_huggingface(
     output_dir: Path,
     repo_id: str = "dangphuc2109/legalir-task1-reranker",
@@ -54,14 +65,7 @@ def upload_artifacts_to_huggingface(
 ) -> str | None:
     """Upload production artifacts to Hugging Face Hub and return the commit SHA."""
     # Robust token resolution: prefer explicit token, then write token, then standard token
-    if not token or not token.startswith("hf_"):
-        candidates = [
-            token,
-            os.environ.get("HF_TOKEN_WRITE"),
-            os.environ.get("HF_TOKEN"),
-            os.environ.get("HF_TOKEN_READ"),
-        ]
-        token = next((t for t in candidates if t and str(t).startswith("hf_")), None)
+    token = resolve_hf_token(token)
 
     if not token:
         print("[!] Note: No valid Hugging Face token (starting with 'hf_') found in environment. Skipping auto-upload.", flush=True)
@@ -99,6 +103,9 @@ def run_a100_production_gate(
     allow_non_a100: bool = False,
     mock: bool = False,
     hf_repo: str | None = None,
+    precision: str = "bf16",
+    runtime_config_path: Path | str | None = None,
+    reranker_config_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Execute the fail-closed A100 production training run."""
     import shutil
@@ -253,6 +260,14 @@ def run_a100_production_gate(
     except Exception:
         pass
 
+    # Normalize precision once (accept bfloat16/bf16/fp16/fp32)
+    prec_norm = str(precision or "bf16").lower().strip()
+    if prec_norm == "bfloat16":
+        prec_norm = "bf16"
+    if prec_norm not in ("bf16", "fp16", "fp32"):
+        raise ValueError(f"Unsupported precision '{precision}' (expected bf16/fp16/fp32)")
+    print(f"  • Precision          : {prec_norm}", flush=True)
+
     # 6. Full Training Execution
     if mock:
         print("[*] Executing mock A100 production training and artifact generation...", flush=True)
@@ -266,21 +281,37 @@ def run_a100_production_gate(
             zf.writestr("submission.json", sub_json_str)
     else:
         from src.pipeline.kaggle_train import run_kaggle_pipeline
-        print("[*] Launching authoritative full 7,000-query A100 pipeline with BF16...", flush=True)
+        print(f"[*] Launching authoritative full 7,000-query A100 pipeline with {prec_norm.upper()}...", flush=True)
         res = run_kaggle_pipeline(
             data_dir=str(dataset_dir),
             working_dir=str(output_dir),
             run_mode="full",
             device_contract=COLAB_A100_CONTRACT,
-            precision="bf16",
+            precision=prec_norm,
             repo_root=str(REPO_ROOT),
+            runtime_config_path=str(runtime_config_path) if runtime_config_path else "configs/runtime/colab_a100.yaml",
+            reranker_config_path=str(reranker_config_path) if reranker_config_path else "configs/experiments/reranker_lora.yaml",
             allow_nonstandard_production_devices=allow_non_a100,
         )
         print(f"[+] Pipeline completed with status: {res.status}", flush=True)
+        # run_kaggle_pipeline writes submissions/submission.zip; mirror to output root
+        # expected by validation, checksums, HF upload, and notebook Cell 5.
+        nested_zip = output_dir / "submissions" / "submission.zip"
+        nested_json = output_dir / "submissions" / "submission.json"
+        try:
+            if nested_zip.is_file() and nested_zip.resolve() != submission_zip.resolve():
+                shutil.copyfile(nested_zip, submission_zip)
+                print(f"[+] Mirrored pipeline submission to {submission_zip}", flush=True)
+            if nested_json.is_file():
+                shutil.copyfile(nested_json, output_dir / "submission.json")
+        except Exception as mirror_exc:
+            print(f"[!] Warning: failed mirroring pipeline submission ({mirror_exc})", flush=True)
 
-    # 7. Validate Submission.zip
+    # 7. Validate Submission.zip (dict API)
     print(f"[*] Validating submission package: {submission_zip} ...", flush=True)
-    is_sub_valid, sub_msg = validate_submission_zip(submission_zip)
+    zip_val = validate_submission_zip(submission_zip)
+    is_sub_valid = bool(zip_val.get("is_valid"))
+    sub_msg = "; ".join(zip_val.get("errors", [])) or "OK: submission.zip contains only submission.json"
     if not is_sub_valid:
         raise RuntimeError(f"Submission validation failed: {sub_msg}")
     print(f"[+] Submission validation PASSED: {sub_msg}", flush=True)
@@ -324,7 +355,7 @@ def run_a100_production_gate(
         "hardware": {
             "gpu": gpu_name,
             "device_count": device_count,
-            "precision": "bf16",
+            "precision": prec_norm,
         },
         "checksums": checksums,
         "elapsed_seconds": round(time.time() - t0, 2),
@@ -346,13 +377,16 @@ def run_a100_production_gate(
         run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         try:
             from huggingface_hub import HfApi
-            api = HfApi(token=os.environ.get("HF_TOKEN"))
-            api.upload_file(
-                path_or_fileobj=str(run_manifest_path),
-                path_in_repo="run_manifest.json",
-                repo_id=target_hf_repo,
-                commit_message=f"Update final release manifest with commit {hf_commit[:8]}",
-            )
+            api = HfApi(token=resolve_hf_token())
+            if resolve_hf_token() is None:
+                print("[!] Warning: no HF token available for manifest re-upload; skipping.", flush=True)
+            else:
+                api.upload_file(
+                    path_or_fileobj=str(run_manifest_path),
+                    path_in_repo="run_manifest.json",
+                    repo_id=target_hf_repo,
+                    commit_message=f"Update final release manifest with commit {hf_commit[:8]}",
+                )
         except Exception:
             pass
 
@@ -370,6 +404,8 @@ def main() -> int:
     parser.add_argument("--expected-sha", type=str, default="", help="Expected 40-char commit SHA")
     parser.add_argument("--kaggle-report", type=str, default="artifacts/task1/gates/kaggle_t4x2_report.json", help="Path to Kaggle dual-T4 report")
     parser.add_argument("--colab-t4-report", type=str, default="artifacts/task1/gates/colab_t4_report.json", help="Path to Colab single-T4 report")
+    parser.add_argument("--freeze-file", type=str, default="artifacts/task1/freeze/production_freeze.json", help="Path to production freeze tuple")
+    parser.add_argument("--precision", type=str, default="bf16", help="Training precision (bf16/fp16/fp32)")
     parser.add_argument("--allow-non-a100", action="store_true", help="Allow running on non-A100 GPU for testing")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode (CPU testing only)")
     parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker", help="Hugging Face repo ID")
@@ -382,6 +418,8 @@ def main() -> int:
             expected_sha=args.expected_sha,
             kaggle_report_path=args.kaggle_report,
             colab_t4_report_path=args.colab_t4_report,
+            freeze_file_path=args.freeze_file,
+            precision=args.precision,
             allow_non_a100=args.allow_non_a100,
             mock=args.mock,
             hf_repo=args.hf_repo,

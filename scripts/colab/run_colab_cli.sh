@@ -74,9 +74,15 @@ if [ -f "artifacts/task1/freeze/production_freeze.json" ]; then
     colab upload artifacts/task1/freeze/production_freeze.json /content/production_freeze.json -s "$SESSION" || true
 fi
 
-# 3. Execute notebook
-echo "[3/4] Executing $NOTEBOOK on remote Colab VM..."
-colab exec -s "$SESSION" -f "$NOTEBOOK" --timeout 14400
+# 3. Execute notebook (A100 full OOF needs 6-10h; T4 smoke needs ~30min)
+# Allow override via COLAB_TIMEOUT env (seconds). Defaults: A100 40000s (~11h), T4 7200s (2h).
+if [ "$GPU_MODE" = "A100" ]; then
+    TIMEOUT="${COLAB_TIMEOUT:-40000}"
+else
+    TIMEOUT="${COLAB_TIMEOUT:-7200}"
+fi
+echo "[3/4] Executing $NOTEBOOK on remote Colab VM (timeout ${TIMEOUT}s)..."
+colab exec -s "$SESSION" -f "$NOTEBOOK" --timeout "$TIMEOUT"
 
 # 4. Download output artifacts before VM release
 echo "[4/4] Retrieving remote artifacts..."
@@ -87,8 +93,14 @@ if [ "$GPU_MODE" = "T4" ]; then
 elif [ "$GPU_MODE" = "A100" ]; then
     mkdir -p artifacts/task1/production
     colab download /content/legalir_production_run/submission.zip artifacts/task1/production/submission.zip -s "$SESSION" || true
+    colab download /content/legalir_production_run/submission.json artifacts/task1/production/submission.json -s "$SESSION" || true
     colab download /content/legalir_production_run/run_manifest.json artifacts/task1/production/run_manifest.json -s "$SESSION" || true
     colab download /content/legalir_production_run/checksums.sha256 artifacts/task1/production/checksums.sha256 -s "$SESSION" || true
+    colab download /content/legalir_production_run/resolved_config.yaml artifacts/task1/production/resolved_config.yaml -s "$SESSION" || true
+    mkdir -p artifacts/task1/production/final_adapter
+    colab download /content/legalir_production_run/final_adapter/adapter_config.json artifacts/task1/production/final_adapter/adapter_config.json -s "$SESSION" || true
+    colab download /content/legalir_production_run/kaggle_t4x2_report.json artifacts/task1/production/kaggle_t4x2_report.json -s "$SESSION" || true
+    colab download /content/legalir_production_run/colab_t4_report.json artifacts/task1/production/colab_t4_report.json -s "$SESSION" || true
 fi
 
 echo ""

@@ -74,6 +74,7 @@ class OOFRunner:
         reranker_config_path: str | Path | None = None,
         duplicate_groups_path: str | Path | None = None,
         split_provenance: dict[str, Any] | None = None,
+        precision: str | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.index_dir = Path(index_dir)
@@ -91,6 +92,10 @@ class OOFRunner:
         self.output_dir = Path(output_dir)
         self.config_path = Path(config_path) if config_path else None
         self.reranker_config_path = Path(reranker_config_path) if reranker_config_path else self.config_path
+        _prec = str(precision or "bf16").lower().strip()
+        if _prec == "bfloat16":
+            _prec = "bf16"
+        self.precision = _prec if _prec in ("bf16", "fp16", "fp32") else "bf16"
         self.num_folds = int(num_folds)
         self.candidate_k = int(candidate_k)
         self.rerank_k = int(rerank_k)
@@ -483,6 +488,7 @@ class OOFRunner:
                     base_model_name=base_m_name,
                     max_steps=5 if self.smoke else None,
                     device=self.reranker_device,
+                    precision=self.precision,
                     enforce_full_coverage_steps=not self.smoke,
                 )
                 train_sec = time.time() - t_tr0
@@ -814,6 +820,7 @@ class OOFRunner:
                 base_model_name=base_m_name,
                 max_steps=5 if self.smoke else None,
                 device=self.reranker_device,
+                precision=self.precision,
                 enforce_full_coverage_steps=not self.smoke,
             )
             dj_train_sec = time.time() - t_dj_tr0

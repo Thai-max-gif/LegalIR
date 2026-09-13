@@ -1266,6 +1266,10 @@ def run_kaggle_pipeline(
     print("=" * 70)
 
     t_oof0 = time.perf_counter()
+    # Normalize precision end-to-end (A100 bf16, T4 fp16 fallback via config)
+    _prec_norm = str(precision or "bf16").lower().strip() if (precision or "") else None
+    if _prec_norm == "bfloat16":
+        _prec_norm = "bf16"
     oof_runner = OOFRunner(
         data_dir=canonical_data_dir,
         index_dir=index_dir,
@@ -1288,6 +1292,7 @@ def run_kaggle_pipeline(
         train_query_embeddings=train_query_embs,
         duplicate_groups_path=dup_groups_path,
         split_provenance=split_provenance_report,
+        precision=_prec_norm,
     )
     cv_report = oof_runner.run()
     oof_cv_time = max(0.001, time.perf_counter() - t_oof0)
@@ -1410,7 +1415,7 @@ def run_kaggle_pipeline(
         max_steps=max_final_steps,
         base_model_name="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
         device=reranker_device,
-        precision=precision,
+        precision=_prec_norm,
         enforce_full_coverage_steps=is_full,
     )
     final_training_time = max(0.001, time.perf_counter() - t_tr0)
