@@ -35,17 +35,18 @@ python scripts/verify_prepush.py
 ```
 This executes:
 1. Python syntax compilation across `src/` and `scripts/`.
-2. Modular pytest suites (`tests/unit`, `tests/dataset`, `tests/notebook`, `tests/parity`, `tests/leakage`, `tests/memory`, `tests/integration`, `tests/release`).
+2. Modular pytest suites (`tests/unit`, `tests/contracts`, `tests/dataset`, `tests/notebook`, `tests/parity`, `tests/leakage`, `tests/memory`, `tests/integration`, `tests/release`).
 3. Parameter budget audit (`scripts/audit_parameters.py` < 4B).
-4. Notebook zero-drift check (`scripts/generate_notebooks.py --check-drift`).
-5. Offline Kaggle pipeline smoke.
-6. Git working tree hygiene.
+4. Notebook zero-drift check (`scripts/generate_notebooks.py --check-drift`) and parity (`scripts/check_notebook_parity.py`).
+5. Forbidden-fallback scan (`scripts/check_no_fallbacks.py`).
+6. Offline Kaggle pipeline smoke.
+7. Git working tree hygiene.
 
 ---
 
 ### Stage 2: Kaggle 2×T4 Smoke Gate (B1.1)
 1. **Open Notebook on Kaggle**:
-   - URL: `https://www.kaggle.com/code/phucdangg/legalir-training` (or upload `notebooks/kaggle_smoke.ipynb`).
+   - URL: `https://www.kaggle.com/code/phucdangg/legalir-training` (or upload `notebooks/kaggle_t4x2_smoke.ipynb`, alias `notebooks/kaggle_smoke.ipynb`).
 2. **Attach Dataset**:
    - Kaggle Dataset: `phucdangg/legalir-task1-clean-data` (attached at `/kaggle/input/datasets/phucdangg/legalir-task1-clean-data` or `/kaggle/input/legalir-task1-clean-data`).
 3. **Accelerator**:
@@ -55,7 +56,12 @@ This executes:
    - Mines a 50-query leakage-safe subset on the fly.
    - Runs 3 optimizer updates on `BAAI/bge-reranker-v2-m3` + LoRA.
    - Asserts finite loss, weight update delta $\Delta w > 0$, and adapter checkpoint save/reload.
-   - Generates `kaggle_smoke_report.json` with verdict `"PASS"`.
+   - Generates `kaggle_t4x2_report.json` with verdict `"PASS"`.
+
+### Stage 2b: Colab Single-T4 Contract Gate (B1.15)
+1. **Run via CLI (recommended)**: `./scripts/colab/run_colab_cli.sh T4`.
+2. **Or manual**: open `notebooks/colab_t4_smoke.ipynb` on Colab with a T4 runtime.
+3. Verifies upstream Kaggle PASS report, exercises single-GPU (`cuda:0`/`cuda:0`) topology with real models, emits `colab_t4_report.json` (`PASS`).
 
 ---
 
