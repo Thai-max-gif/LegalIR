@@ -58,6 +58,45 @@ def resolve_hf_token(explicit: str | None = None) -> str | None:
     return next((t for t in candidates if t and str(t).startswith("hf_")), None)
 
 
+def preflight_huggingface_access(
+    repo_id: str,
+    token: str | None = None,
+) -> tuple[bool, str]:
+    """Fail-fast access check for the Hugging Face release repo (fine-grained-token aware).
+
+    Returns (ok, detail). Anonymous (no token) is NOT an error here: uploads are
+    simply disabled and artifacts stay local. A present-but-rejected token IS an
+    error so paid GPU time is never burned on a run that cannot release.
+    Network errors warn-open to avoid blocking offline/air-gapped validation.
+    """
+    token = resolve_hf_token(token)
+    if not token:
+        return True, "anonymous: uploads disabled, artifacts stay local"
+    try:
+        from huggingface_hub import HfApi
+        from huggingface_hub.utils import HfHubHTTPError
+    except Exception as exc:
+        return True, f"huggingface_hub unavailable, skipping access check ({exc})"
+    try:
+        api = HfApi(token=token)
+        user = api.whoami().get("name", "unknown")
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            return False, f"token rejected by Hugging Face Hub (HTTP {status}): {exc}"
+        return True, f"whoami unreachable, skipping access check ({exc})"
+    try:
+        api.repo_info(repo_id=repo_id, repo_type="model")
+        return True, f"authenticated as @{user}; write access to {repo_id} will be verified at upload"
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 404:
+            return True, f"authenticated as @{user}; repo {repo_id} missing and will be created at upload"
+        if status in (401, 403):
+            return False, f"token lacks access to {repo_id} (HTTP {status}): {exc}"
+        return True, f"repo check unreachable, skipping access check ({exc})"
+
+
 def upload_artifacts_to_huggingface(
     output_dir: Path,
     repo_id: str = "dangphuc2109/legalir-task1-reranker",
@@ -267,6 +306,14 @@ def run_a100_production_gate(
     if prec_norm not in ("bf16", "fp16", "fp32"):
         raise ValueError(f"Unsupported precision '{precision}' (expected bf16/fp16/fp32)")
     print(f"  • Precision          : {prec_norm}", flush=True)
+
+    # Hugging Face release preflight (fail fast on rejected tokens, before GPU burn)
+    target_hf_repo_early = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
+    if not mock:
+        hf_ok, hf_detail = preflight_huggingface_access(target_hf_repo_early)
+        print(f"  • Hugging Face       : {hf_detail}", flush=True)
+        if not hf_ok:
+            raise RuntimeError(f"Hugging Face access preflight failed: {hf_detail}")
 
     # 6. Full Training Execution
     if mock:

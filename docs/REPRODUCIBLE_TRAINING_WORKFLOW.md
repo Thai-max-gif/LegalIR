@@ -94,7 +94,7 @@ This script automatically:
 2. **Select Runtime**:
    - Runtime $\rightarrow$ Change runtime type $\rightarrow$ **NVIDIA A100 GPU** (High-RAM).
 3. **Configure Secrets**:
-   - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN` with write permissions.
+   - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN` using a fine-grained token with read access to public models and write access to `HF_REPO_ID` (defaults to `dangphuc2109/legalir-task1-reranker`). The gate verifies access pre-training and fails fast on rejected tokens.
 4. **Click "Run All"**:
    - Preflight verifies GPU is NVIDIA A100 and confirms Kaggle Smoke Gate passed.
    - Executes full training, validates submission, and publishes artifacts to Hugging Face.

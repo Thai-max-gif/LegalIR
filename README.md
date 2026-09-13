@@ -174,7 +174,7 @@ The Kaggle smoke gate uses the authoritative runner (`scripts/run_kaggle_smoke.p
    - Attach verified immutable production bundle: **`legalir-production-bundle`**
 3. **Accelerator**: Select **GPU T4** or **GPU T4 x2**.
 4. **Internet**: Toggle **On** (for downloading base reranker weights and minimal missing packages).
-5. **Kaggle Secret (`HF_TOKEN`)**: Add `HF_TOKEN` under **Add-ons -> Secrets** for high-bandwidth Hugging Face downloads.
+5. **Kaggle Secret (`HF_TOKEN`)**: Add `HF_TOKEN` under **Add-ons -> Secrets** for authenticated high-bandwidth Hugging Face downloads (any `hf_` token; fine-grained read access to public models suffices for smoke gates).
 
 ### 5.2 Notebook Execution Flow
 Click **Run All** or **Save Version -> Save & Run All (Commit)**:
