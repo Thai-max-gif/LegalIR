@@ -90,6 +90,8 @@ if [ "$GPU_MODE" = "T4" ]; then
     mkdir -p artifacts/task1/gates
     colab download /content/artifacts/task1/gates/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" || \
     colab download /content/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" || true
+    # Full smoke telemetry (approval validator reads artifacts/task1/colab_smoke_report.json)
+    colab download /content/artifacts/task1/gates/colab_smoke_report.json artifacts/task1/colab_smoke_report.json -s "$SESSION" || true
 elif [ "$GPU_MODE" = "A100" ]; then
     mkdir -p artifacts/task1/production
     colab download /content/legalir_production_run/submission.zip artifacts/task1/production/submission.zip -s "$SESSION" || true
