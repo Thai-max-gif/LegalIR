@@ -5,6 +5,7 @@ bit-identical retrieval results compared to legacy baseline logic.
 
 from collections import Counter, defaultdict
 import math
+from pathlib import Path
 import re
 from typing import Any
 import unicodedata
@@ -98,10 +99,41 @@ def fit_legacy(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _assert_equivalence(opt_retriever: BM25PyViRetriever, legacy_data: dict[str, Any], queries: list[str]) -> None:
+    """Assert structural parameters and retrieval scores match exactly."""
+    assert opt_retriever.chunk_ids == legacy_data["chunk_ids"]
+    assert opt_retriever.doc_ids == legacy_data["doc_ids"]
+    np.testing.assert_allclose(opt_retriever.chunk_lens, legacy_data["chunk_lens"])
+    assert math.isclose(opt_retriever.avg_len, legacy_data["avg_len"], rel_tol=1e-6)
+    assert set(opt_retriever.idf.keys()) == set(legacy_data["idf"].keys())
+
+    for k in opt_retriever.idf:
+        assert math.isclose(opt_retriever.idf[k], legacy_data["idf"][k], rel_tol=1e-6)
+
+    legacy_instance = BM25PyViRetriever()
+    legacy_instance.chunk_ids = legacy_data["chunk_ids"]
+    legacy_instance.doc_ids = legacy_data["doc_ids"]
+    legacy_instance.chunk_lens = legacy_data["chunk_lens"]
+    legacy_instance.avg_len = legacy_data["avg_len"]
+    legacy_instance.idf = legacy_data["idf"]
+    legacy_instance.postings = legacy_data["postings"]
+
+    for q in queries:
+        res_opt = opt_retriever.retrieve(q, top_k=20)
+        res_leg = legacy_instance.retrieve(q, top_k=20)
+        assert len(res_opt) == len(res_leg)
+        assert len(res_opt) > 0
+        for item_opt, item_leg in zip(res_opt, res_leg):
+            assert item_opt["doc_id"] == item_leg["doc_id"]
+            assert math.isclose(item_opt["score"], item_leg["score"], rel_tol=1e-5)
+
+
 def test_bm25_pyvi_optimized_exact_equivalence():
     """Verify optimized BM25PyViRetriever generates identical results to legacy unoptimized baseline."""
-    chunks_path = "artifacts/task1/data/chunks.parquet"
+    chunks_path = Path("artifacts/task1/data/chunks.parquet")
     docs_path = "artifacts/task1/data/documents.parquet"
+    if not chunks_path.is_file():
+        pytest.skip("canonical dataset not present (Kaggle-only artifact)")
 
     chunks_df = pd.read_parquet(chunks_path)
     sample = chunks_df[chunks_df["granularity"] == "micro"].iloc[:1500]
@@ -114,37 +146,54 @@ def test_bm25_pyvi_optimized_exact_equivalence():
     legacy_data = fit_legacy(enriched.to_dict("records"))
 
     # Assert structural parameters match exactly
-    assert opt_retriever.chunk_ids == legacy_data["chunk_ids"]
-    assert opt_retriever.doc_ids == legacy_data["doc_ids"]
-    np.testing.assert_allclose(opt_retriever.chunk_lens, legacy_data["chunk_lens"])
-    assert math.isclose(opt_retriever.avg_len, legacy_data["avg_len"], rel_tol=1e-6)
-    assert set(opt_retriever.idf.keys()) == set(legacy_data["idf"].keys())
+    _assert_equivalence(
+        opt_retriever,
+        legacy_data,
+        [
+            "quy định về xử phạt vi phạm giao thông đường bộ",
+            "thời hạn nộp thuế thu nhập cá nhân theo luật quản lý thuế",
+            "hồ sơ đăng ký doanh nghiệp cổ phần cần những giấy tờ gì",
+            "thủ tục giải quyết tranh chấp đất đai theo luật đất đai",
+        ],
+    )
 
-    for k in opt_retriever.idf:
-        assert math.isclose(opt_retriever.idf[k], legacy_data["idf"][k], rel_tol=1e-6)
 
-    # Assert retrieve scores match bit-for-bit
-    test_queries = [
-        "quy định về xử phạt vi phạm giao thông đường bộ",
-        "thời hạn nộp thuế thu nhập cá nhân theo luật quản lý thuế",
-        "hồ sơ đăng ký doanh nghiệp cổ phần cần những giấy tờ gì",
-        "thủ tục giải quyết tranh chấp đất đai theo luật đất đai",
-    ]
+def test_bm25_pyvi_df_list_parity_synthetic():
+    """DataFrame vs legacy list parity on crafted edge rows (runs without the dataset)."""
+    df = pd.DataFrame(
+        [
+            {
+                "chunk_id": "c1",
+                "doc_id": "d1",
+                "text_norm": "nội dung thử nghiệm luật đất đai",
+                "text_raw": "raw",
+                "title": "Luật Đất đai",
+                "legal_number": "13/2024/QH15",
+                "article": "Điều 5",
+                "clause": "khoản 2",
+                "link": "https://example.com/luat-dat-dai",
+            },
+            {
+                # Empty text_norm must fall back to text_raw like legacy `or` logic.
+                "chunk_id": "c2",
+                "doc_id": "d2",
+                "text_norm": "",
+                "text_raw": "noi dung raw fallback tranh chấp",
+                "title": float("nan"),
+                "legal_number": None,
+                "article": float("nan"),
+                "clause": "",
+                "link": None,
+            },
+            {"chunk_id": "c3", "doc_id": "d3"},
+        ]
+    )
 
-    # Create dummy legacy instance
-    legacy_instance = BM25PyViRetriever()
-    legacy_instance.chunk_ids = legacy_data["chunk_ids"]
-    legacy_instance.doc_ids = legacy_data["doc_ids"]
-    legacy_instance.chunk_lens = legacy_data["chunk_lens"]
-    legacy_instance.avg_len = legacy_data["avg_len"]
-    legacy_instance.idf = legacy_data["idf"]
-    legacy_instance.postings = legacy_data["postings"]
+    opt_retriever = BM25PyViRetriever().fit(df)
+    legacy_data = fit_legacy(df.to_dict("records"))
 
-    for q in test_queries:
-        res_opt = opt_retriever.retrieve(q, top_k=20)
-        res_leg = legacy_instance.retrieve(q, top_k=20)
-        assert len(res_opt) == len(res_leg)
-        assert len(res_opt) > 0
-        for item_opt, item_leg in zip(res_opt, res_leg):
-            assert item_opt["doc_id"] == item_leg["doc_id"]
-            assert math.isclose(item_opt["score"], item_leg["score"], rel_tol=1e-5)
+    _assert_equivalence(
+        opt_retriever,
+        legacy_data,
+        ["tranh chấp đất đai", "nội dung thử nghiệm"],
+    )
