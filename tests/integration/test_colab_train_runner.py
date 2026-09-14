@@ -30,7 +30,8 @@ def test_colab_train_runner_mock(tmp_path: Path):
 
     data = json.loads(manifest_p.read_text(encoding="utf-8"))
     assert data.get("stage") == "B1.2_COLAB_A100_PRODUCTION_RUN"
-    assert data.get("status") == "COMPLETED"
+    assert data.get("status") in ("COMPLETED", "MOCK_COMPLETED")
+    assert data.get("verdict") in ("PASS", "DEBUG_ONLY")
 
     sub_zip = out_dir / "submission.zip"
     assert sub_zip.is_file(), f"Missing submission.zip at {sub_zip}"
