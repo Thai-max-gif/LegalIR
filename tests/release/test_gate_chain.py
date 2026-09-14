@@ -134,3 +134,16 @@ def test_mismatched_config_hash_fails(valid_kaggle_report, valid_colab_t4_report
             expected_dataset_hash=SAMPLE_DATASET_HASH,
             expected_config_hash=SAMPLE_CONFIG_HASH,
         )
+
+
+def test_mock_devices_rejected_in_gate_chain(valid_kaggle_report, valid_colab_t4_report):
+    """A report containing mock hardware devices is rejected."""
+    valid_kaggle_report["devices"] = ["Mock Tesla T4", "Mock Tesla T4"]
+    with pytest.raises(GateChainValidationError, match="contains mock hardware devices"):
+        verify_prior_gate_reports(
+            kaggle_report=valid_kaggle_report,
+            colab_t4_report=valid_colab_t4_report,
+            expected_sha=SAMPLE_SHA,
+            expected_dataset_hash=SAMPLE_DATASET_HASH,
+            expected_config_hash=SAMPLE_CONFIG_HASH,
+        )

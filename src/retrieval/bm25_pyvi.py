@@ -21,7 +21,6 @@ except ImportError:
     ViTokenizer = None
 
 PYVI_TOKEN_PATTERN = re.compile(r'\b[a-zà-ỹ0-9_]+\b', re.IGNORECASE | re.UNICODE)
-PYVI_INDEX_CODE_VERSION = "bm25_pyvi_v3"
 
 
 @functools.lru_cache(maxsize=262144)
@@ -44,7 +43,7 @@ def tokenize_pyvi(text: str) -> list[str]:
 
 
 def _normalize_str(val: Any) -> str:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    if val is None or pd.isna(val):
         return ""
     return unicodedata.normalize("NFC", str(val)).strip()
 
@@ -84,20 +83,31 @@ class BM25PyViRetriever:
         """Fit BM25 index on micro chunks using PyVi tokenization."""
         if isinstance(chunks, pd.DataFrame):
             n_rows = len(chunks)
-            cids = chunks["chunk_id"].astype(str).tolist() if "chunk_id" in chunks else [str(i) for i in range(n_rows)]
-            dids = (
-                chunks["doc_id"].astype(str).tolist()
-                if "doc_id" in chunks
-                else (chunks["document_id"].astype(str).tolist() if "document_id" in chunks else cids)
+            cids = (
+                chunks["chunk_id"].fillna("").astype(str).tolist()
+                if "chunk_id" in chunks
+                else [str(i) for i in range(n_rows)]
             )
+            cids = [c if c else str(i) for i, c in enumerate(cids)]
+            if "doc_id" in chunks and "document_id" in chunks:
+                raw_dids = chunks["doc_id"].fillna(chunks["document_id"]).fillna("").astype(str).tolist()
+            elif "doc_id" in chunks:
+                raw_dids = chunks["doc_id"].fillna("").astype(str).tolist()
+            elif "document_id" in chunks:
+                raw_dids = chunks["document_id"].fillna("").astype(str).tolist()
+            else:
+                raw_dids = cids
+            dids = [d if d else c for d, c in zip(raw_dids, cids)]
+
             body_col = "text_norm" if "text_norm" in chunks else ("text_raw" if "text_raw" in chunks else "text")
-            if "text_norm" in chunks or "text_raw" in chunks:
-                # Mirror legacy list-path fallback: c.get("text_norm") or c.get("text_raw", "").
+            if "text_norm" in chunks or "text_raw" in chunks or "text" in chunks:
+                # Mirror list-path fallback: text_norm or text_raw or text.
                 norms = chunks["text_norm"].fillna("").astype(str).tolist() if "text_norm" in chunks else [""] * n_rows
                 raws = chunks["text_raw"].fillna("").astype(str).tolist() if "text_raw" in chunks else [""] * n_rows
-                bodies = [n or r for n, r in zip(norms, raws)]
+                texts = chunks["text"].fillna("").astype(str).tolist() if "text" in chunks else [""] * n_rows
+                bodies = [n or r or t for n, r, t in zip(norms, raws, texts)]
             else:
-                bodies = chunks[body_col].fillna("").astype(str).tolist() if body_col in chunks else [""] * n_rows
+                bodies = [""] * n_rows
             titles = chunks["title"].fillna("").astype(str).tolist() if "title" in chunks else [""] * n_rows
             legal_nums = chunks["legal_number"].fillna("").astype(str).tolist() if "legal_number" in chunks else [""] * n_rows
             articles = chunks["article"].fillna("").astype(str).tolist() if "article" in chunks else [""] * n_rows
@@ -140,11 +150,19 @@ class BM25PyViRetriever:
 
             if not is_df:
                 c = idx_entry[1]
-                cid = str(c.get("chunk_id", idx))
-                did = str(c.get("doc_id", c.get("document_id", cid)))
+                cid_val = c.get("chunk_id")
+                cid = str(cid_val) if cid_val is not None and not pd.isna(cid_val) and str(cid_val) != "" else str(idx)
+                did_val = c.get("doc_id")
+                if did_val is None or pd.isna(did_val) or str(did_val) == "":
+                    did_val = c.get("document_id")
+                did = str(did_val) if did_val is not None and not pd.isna(did_val) and str(did_val) != "" else cid
                 self.chunk_ids.append(cid)
                 self.doc_ids.append(did)
-                body_text = _normalize_str(c.get("text_norm") or c.get("text_raw", ""))
+                body_text = (
+                    _normalize_str(c.get("text_norm"))
+                    or _normalize_str(c.get("text_raw"))
+                    or _normalize_str(c.get("text", ""))
+                )
                 legal_num = _normalize_str(c.get("legal_number", ""))
                 title = _normalize_str(c.get("title", ""))
                 article = _normalize_str(c.get("article", ""))

@@ -197,3 +197,64 @@ def test_bm25_pyvi_df_list_parity_synthetic():
         legacy_data,
         ["tranh chấp đất đai", "nội dung thử nghiệm"],
     )
+
+
+def test_bm25_pyvi_edge_cases_and_null_handling():
+    """Verify DataFrame and List paths handle pd.NA, np.nan, document_id fallback, and text column."""
+    rows = [
+        {
+            "chunk_id": "c1",
+            "doc_id": "d1",
+            "text_norm": "luật đất đai quy định bồi thường",
+            "title": "Luật Đất đai",
+            "legal_number": "13/2024/QH15",
+            "article": "Điều 5",
+            "clause": "khoản 1",
+            "link": "https://example.com/c1",
+        },
+        {
+            "chunk_id": "c2",
+            "doc_id": "d2",
+            "text_norm": pd.NA,
+            "text_raw": "tranh chấp quyền sử dụng đất",
+            "title": None,
+            "legal_number": np.nan,
+            "article": pd.NA,
+            "clause": "",
+            "link": None,
+        },
+        {
+            "chunk_id": "c3",
+            "document_id": "d3_fallback",
+            "text": "quy định xử phạt vi phạm giao thông",
+        },
+        {
+            "text_norm": "hợp đồng lao động tiền lương bảo hiểm",
+        },
+    ]
+    df = pd.DataFrame(rows)
+    records = df.to_dict("records")
+
+    ret_df = BM25PyViRetriever().fit(df)
+    ret_list = BM25PyViRetriever().fit(records)
+
+    # Chunk IDs and Doc IDs must all be strings
+    assert all(isinstance(x, str) for x in ret_df.chunk_ids)
+    assert all(isinstance(x, str) for x in ret_df.doc_ids)
+    assert ret_df.chunk_ids == ret_list.chunk_ids
+    assert ret_df.doc_ids == ret_list.doc_ids
+    assert ret_df.doc_ids[2] == "d3_fallback"
+    assert ret_df.chunk_ids[3] == "3"
+    assert ret_df.doc_ids[3] == "3"
+
+    np.testing.assert_allclose(ret_df.chunk_lens, ret_list.chunk_lens)
+    assert math.isclose(ret_df.avg_len, ret_list.avg_len, rel_tol=1e-6)
+    assert set(ret_df.idf.keys()) == set(ret_list.idf.keys())
+
+    # Retrieval results must be identical
+    res_df = ret_df.retrieve("tranh chấp đất đai", top_k=5)
+    res_list = ret_list.retrieve("tranh chấp đất đai", top_k=5)
+    assert len(res_df) == len(res_list)
+    for r_df, r_list in zip(res_df, res_list):
+        assert r_df["doc_id"] == r_list["doc_id"]
+        assert math.isclose(r_df["score"], r_list["score"], rel_tol=1e-5)

@@ -259,8 +259,11 @@ class CrossEncoderReranker:
         # Clamp truncation to the loaded model's positional capacity so long
         # passages truncate instead of crashing position-embedding lookup.
         caps = [max_length]
-        model_cap = getattr(getattr(self.model, "config", None), "max_position_embeddings", None)
+        model_cfg = getattr(self.model, "config", None)
+        model_cap = getattr(model_cfg, "max_position_embeddings", None)
         if isinstance(model_cap, int) and 0 < model_cap < 100000:
+            if getattr(model_cfg, "model_type", "") in ("xlm-roberta", "roberta") and getattr(model_cfg, "pad_token_id", None) == 1:
+                model_cap = max(1, model_cap - 2)
             caps.append(model_cap)
         tok_cap = getattr(self.tokenizer, "model_max_length", None)
         if isinstance(tok_cap, int) and 0 < tok_cap < 100000:

@@ -554,8 +554,11 @@ class RerankerTrainer:
         self.max_length = int(self.config.get("max_length", 512))
         # Clamp truncation to the model's positional capacity so long passages
         # truncate instead of crashing position-embedding lookup.
-        _model_cap = getattr(getattr(model, "config", None), "max_position_embeddings", None)
+        _model_cfg = getattr(model, "config", None)
+        _model_cap = getattr(_model_cfg, "max_position_embeddings", None)
         if isinstance(_model_cap, int) and 0 < _model_cap < 100000:
+            if getattr(_model_cfg, "model_type", "") in ("xlm-roberta", "roberta") and getattr(_model_cfg, "pad_token_id", None) == 1:
+                _model_cap = max(1, _model_cap - 2)
             self.max_length = min(self.max_length, _model_cap)
         self.learning_rate = float(self.config.get("learning_rate", 2e-5))
         self.weight_decay = float(self.config.get("weight_decay", 0.01))

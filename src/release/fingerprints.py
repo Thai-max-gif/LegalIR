@@ -340,6 +340,10 @@ def verify_prior_gate_reports(
         if verdict != "PASS":
             raise GateChainValidationError(f"{name} gate did not pass (verdict: '{verdict}', expected: 'PASS').")
 
+        devices = report.get("devices", [])
+        if any("mock" in str(d).lower() for d in devices):
+            raise GateChainValidationError(f"{name} gate report contains mock hardware devices: {devices}")
+
         r_sha = report.get("git_sha")
         if not r_sha or r_sha.lower() != expected_sha.lower():
             raise GateChainValidationError(
