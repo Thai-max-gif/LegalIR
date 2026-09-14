@@ -375,13 +375,17 @@ def run_a100_production_gate(
     checksums_file.write_text("\n".join(checksums_lines) + "\n", encoding="utf-8")
 
     # 9. Build Initial Run Manifest
+    # Mock runs are debug-only: they bypass the gate chain and use synthetic
+    # artifacts, so they must never claim PASS/COMPLETED production status.
+    mock_verdict = "DEBUG_ONLY" if mock else "PASS"
+    mock_status = "MOCK_COMPLETED" if mock else "COMPLETED"
     manifest = {
         "schema_version": 3,
         "run_id": f"task1-{time.strftime('%Y%m%d-%H%M%S')}-{actual_sha[:7]}",
         "stage": "B1.2_COLAB_A100_PRODUCTION_RUN",
         "gate": "COLAB_A100",
-        "status": "COMPLETED",
-        "verdict": "PASS",
+        "status": mock_status,
+        "verdict": mock_verdict,
         "git_sha": actual_sha,
         "dataset": {
             "slug": "phucdangg/legalir-task1-clean-data",
@@ -396,8 +400,8 @@ def run_a100_production_gate(
             "dense_id": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
         },
         "gates": {
-            "kaggle_t4x2": {"verdict": "PASS", "report_sha256": k_rep_hash},
-            "colab_t4": {"verdict": "PASS", "report_sha256": c_rep_hash},
+            "kaggle_t4x2": {"verdict": mock_verdict, "report_sha256": k_rep_hash},
+            "colab_t4": {"verdict": mock_verdict, "report_sha256": c_rep_hash},
         },
         "hardware": {
             "gpu": gpu_name,

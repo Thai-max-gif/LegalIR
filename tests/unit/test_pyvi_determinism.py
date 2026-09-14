@@ -48,7 +48,11 @@ def fit_legacy(records: list[dict[str, Any]]) -> dict[str, Any]:
         did = str(c.get("doc_id", c.get("document_id", cid)))
 
         weighted_tokens = []
-        body_text = _normalize_str(c.get("text_norm") or c.get("text_raw", ""))
+        body_text = (
+            _normalize_str(c.get("text_norm"))
+            or _normalize_str(c.get("text_raw"))
+            or _normalize_str(c.get("text", ""))
+        )
         weighted_tokens.extend(legacy_tokenize_pyvi(body_text) * int(field_weights["body"]))
 
         legal_num = _normalize_str(c.get("legal_number", ""))

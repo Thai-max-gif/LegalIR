@@ -341,8 +341,25 @@ def verify_prior_gate_reports(
             raise GateChainValidationError(f"{name} gate did not pass (verdict: '{verdict}', expected: 'PASS').")
 
         devices = report.get("devices", [])
-        if any("mock" in str(d).lower() for d in devices):
-            raise GateChainValidationError(f"{name} gate report contains mock hardware devices: {devices}")
+        if isinstance(devices, (str, bytes)):
+            device_candidates: list[Any] = [devices]
+        elif isinstance(devices, (list, tuple)):
+            device_candidates = list(devices)
+        elif devices:
+            device_candidates = [devices]
+        else:
+            device_candidates = []
+        # Colab single-T4 reports carry `gpu` (no `devices` key); legacy
+        # smoke reports carry `gpu_name`. All hardware identity fields must
+        # be scanned so a forged PASS with mock hardware cannot chain.
+        for _hw_key in ("gpu", "gpu_name", "device_names"):
+            _hw_val = report.get(_hw_key, "")
+            if isinstance(_hw_val, (list, tuple)):
+                device_candidates.extend(_hw_val)
+            elif _hw_val:
+                device_candidates.append(_hw_val)
+        if any("mock" in str(d).lower() for d in device_candidates if d is not None and str(d)):
+            raise GateChainValidationError(f"{name} gate report contains mock hardware devices: {device_candidates}")
 
         r_sha = report.get("git_sha")
         if not r_sha or r_sha.lower() != expected_sha.lower():

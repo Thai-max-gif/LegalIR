@@ -147,3 +147,16 @@ def test_mock_devices_rejected_in_gate_chain(valid_kaggle_report, valid_colab_t4
             expected_dataset_hash=SAMPLE_DATASET_HASH,
             expected_config_hash=SAMPLE_CONFIG_HASH,
         )
+
+
+def test_mock_gpu_rejected_in_gate_chain(valid_kaggle_report, valid_colab_t4_report):
+    """A Colab report with mock `gpu`/`gpu_name` is rejected even if verdict is PASS."""
+    valid_colab_t4_report["gpu"] = "Mock Tesla T4"
+    with pytest.raises(GateChainValidationError, match="contains mock hardware devices"):
+        verify_prior_gate_reports(
+            kaggle_report=valid_kaggle_report,
+            colab_t4_report=valid_colab_t4_report,
+            expected_sha=SAMPLE_SHA,
+            expected_dataset_hash=SAMPLE_DATASET_HASH,
+            expected_config_hash=SAMPLE_CONFIG_HASH,
+        )
