@@ -284,6 +284,96 @@ def create_toy_canonical_dataset(target_dir: Path) -> Path:
     return target_dir
 
 
+def sample_canonical_dataset(src_dir: Path, n_docs: int, target_dir: Path, n_public: int = 20) -> Path:
+    """Sample the first N documents of a real canonical dataset (plus linked chunks/qrels/queries).
+
+    Useful as a fast sample test on real schema data. Smoke mode does not enforce
+    official counts, so the reduced set runs end-to-end.
+    """
+    src_dir = Path(src_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    docs_df = pd.read_parquet(src_dir / "documents.parquet").iloc[: max(1, int(n_docs))]
+    keep_docs = set(docs_df["doc_id"].astype(str))
+    docs_df.to_parquet(target_dir / "documents.parquet", index=False)
+
+    chunks_df = pd.read_parquet(src_dir / "chunks.parquet")
+    chunks_df[chunks_df["doc_id"].astype(str).isin(keep_docs)].to_parquet(target_dir / "chunks.parquet", index=False)
+
+    qrels_df = pd.read_parquet(src_dir / "qrels_train.parquet")
+    qrels_df = qrels_df[qrels_df["doc_id"].astype(str).isin(keep_docs)]
+    qrels_df.to_parquet(target_dir / "qrels_train.parquet", index=False)
+
+    queries_df = pd.read_parquet(src_dir / "queries_train.parquet")
+    keep_q = set(qrels_df["query_id"].astype(str))
+    queries_df[queries_df["query_id"].astype(str).isin(keep_q)].to_parquet(target_dir / "queries_train.parquet", index=False)
+
+    public_src = src_dir / "public-official.json"
+    if public_src.is_file():
+        public_data = json.loads(public_src.read_text(encoding="utf-8"))
+        items = list(public_data.items())[: max(1, int(n_public))]
+        (target_dir / "public-official.json").write_text(
+            json.dumps(dict(items), indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    # Write input splits over the sampled IDs so split resolution prefers them
+    # over the full-data repo splits (which would reference queries/docs outside
+    # the sample and yield empty gold lists in OOF eval).
+    splits_dir = target_dir / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    qids = sorted(keep_q)
+    half = max(1, len(qids) // 2)
+    doc_ids = sorted(keep_docs)
+    d_half = max(1, len(doc_ids) // 2)
+    split_info = [
+        {"fold": 0, "train_query_ids": qids[half:], "val_query_ids": qids[:half]},
+        {"fold": 1, "train_query_ids": qids[:half], "val_query_ids": qids[half:]},
+    ]
+    (splits_dir / "random_5fold.json").write_text(json.dumps(split_info), encoding="utf-8")
+
+    # Greedy doc-disjoint split: gold-doc sets of train/val must not overlap.
+    gold_map: dict[str, set[str]] = {}
+    for _, r in qrels_df.iterrows():
+        gold_map.setdefault(str(r["query_id"]), set()).add(str(r["doc_id"]))
+    train_q: list[str] = []
+    val_q: list[str] = []
+    train_d: set[str] = set()
+    val_d: set[str] = set()
+    for qid in qids:
+        gold = set(gold_map.get(qid, set()))
+        if not gold:
+            continue
+        prefer_val = len(val_q) <= len(train_q)
+        placed = False
+        for want_val in ([prefer_val, not prefer_val] if len(qids) > 1 else [prefer_val]):
+            other_d = train_d if want_val else val_d
+            if not (gold & other_d):
+                (val_q if want_val else train_q).append(qid)
+                (val_d if want_val else train_d).update(gold)
+                placed = True
+                break
+        # Queries whose gold spans both sides are dropped from the split.
+    if not train_q or not val_q:
+        raise ValueError(
+            f"--sample-docs {n_docs} yields no valid doc-disjoint split "
+            f"(train={len(train_q)}, val={len(val_q)}); increase --sample-docs."
+        )
+    (splits_dir / "doc_disjoint_split.json").write_text(
+        json.dumps(
+            {
+                "train_query_ids": train_q,
+                "val_query_ids": val_q,
+                "train_doc_ids": sorted(train_d),
+                "val_doc_ids": sorted(val_d),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    print(f"[*] Sampled {len(docs_df)} docs / {len(keep_q)} queries from {src_dir} into {target_dir}")
+    return target_dir
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run dedicated end-to-end smoke test for LegalIR Kaggle production pipeline."
@@ -303,6 +393,12 @@ def main():
         type=str,
         default=None,
         help="Explicit canonical dataset directory.",
+    )
+    parser.add_argument(
+        "--sample-docs",
+        type=int,
+        default=0,
+        help="Sample first N documents of --data-dir for a fast real-schema sample test (smoke mode only).",
     )
     parser.add_argument(
         "--working-dir",
@@ -338,7 +434,20 @@ def main():
 
     # 3. Setup data directory
     data_dir_path = Path(args.data_dir) if args.data_dir else None
-    if args.tiny:
+    if args.sample_docs:
+        if args.tiny:
+            raise ValueError("Cannot combine --sample-docs with --tiny; pick one sample source.")
+        if args.run_mode in ("gpu_smoke", "full"):
+            raise ValueError(
+                f"Cannot use --sample-docs with run_mode='{args.run_mode}'. "
+                f"Production {args.run_mode.upper()} mode strictly requires the official 8,532-document Task 1 dataset."
+            )
+        if data_dir_path is None or not (data_dir_path / "documents.parquet").exists():
+            raise ValueError("--sample-docs requires --data-dir pointing at a canonical dataset.")
+        sample_dir = working_dir / f"sample_data_{int(args.sample_docs)}docs"
+        print(f"[*] Sampling {int(args.sample_docs)} documents for sample test...")
+        data_dir_path = sample_canonical_dataset(data_dir_path, int(args.sample_docs), sample_dir)
+    elif args.tiny:
         if args.run_mode in ("gpu_smoke", "full"):
             raise ValueError(
                 f"Cannot use --tiny with run_mode='{args.run_mode}'. "
@@ -372,7 +481,7 @@ def main():
             run_mode=args.run_mode,
             repo_root=REPO_ROOT,
             config_path=args.config,
-            devices=["cpu", "cpu"] if (args.tiny and args.run_mode == "smoke") else None,
+            devices=["cpu", "cpu"] if ((args.tiny or args.sample_docs) and args.run_mode == "smoke") else None,
         )
     except Exception as e:
         print(f"\n[!] FATAL PIPELINE ERROR: {e}")

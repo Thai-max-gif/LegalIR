@@ -102,7 +102,7 @@ def run_colab_t4_gate(
 
     k_algo_hash = kaggle_data.get("algorithm_config_sha256", "")
     if k_algo_hash != algo_sha256:
-        raise RuntimeError(f"Kaggle report algorithm config hash mismatch! Report has '{k_algo_hash}', actual is '{algo_hash}'.")
+        raise RuntimeError(f"Kaggle report algorithm config hash mismatch! Report has '{k_algo_hash}', actual is '{algo_sha256}'.")
 
     kaggle_report_sha256 = compute_canonical_json_hash(kaggle_data)
 

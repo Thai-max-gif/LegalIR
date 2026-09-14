@@ -24,6 +24,7 @@ def run_kaggle_smoke(
     output_dir: Path | str,
     target_sha: str = "",
     mock: bool = False,
+    sample_queries: int = 50,
 ) -> dict:
     """Backward-compatible entrypoint forwarding to authoritative Kaggle T4x2 gate."""
     dataset_dir = Path(dataset_dir)
@@ -33,6 +34,7 @@ def run_kaggle_smoke(
         output_dir=output_dir,
         expected_sha=target_sha,
         mock=mock,
+        sample_queries=sample_queries,
     )
     # Mirror report to legacy name for backward compatibility
     legacy_report = output_dir / "kaggle_smoke_report.json"
@@ -48,6 +50,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=str, default="artifacts/task1/gates", help="Output directory")
     parser.add_argument("--target-sha", type=str, default="", help="Expected git commit SHA")
     parser.add_argument("--mock", action="store_true", help="Run mock execution for CPU testing")
+    parser.add_argument("--sample-queries", type=int, default=50, help="Official queries to sample for smoke steps")
     args = parser.parse_args()
 
     try:
@@ -56,6 +59,7 @@ def main() -> int:
             output_dir=args.output_dir,
             target_sha=args.target_sha,
             mock=args.mock,
+            sample_queries=args.sample_queries,
         )
         return 0
     except Exception as exc:

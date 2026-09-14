@@ -256,6 +256,17 @@ class CrossEncoderReranker:
         self._load_model()
         import torch
 
+        # Clamp truncation to the loaded model's positional capacity so long
+        # passages truncate instead of crashing position-embedding lookup.
+        caps = [max_length]
+        model_cap = getattr(getattr(self.model, "config", None), "max_position_embeddings", None)
+        if isinstance(model_cap, int) and 0 < model_cap < 100000:
+            caps.append(model_cap)
+        tok_cap = getattr(self.tokenizer, "model_max_length", None)
+        if isinstance(tok_cap, int) and 0 < tok_cap < 100000:
+            caps.append(tok_cap)
+        max_length = min(caps)
+
         self.initial_batch_size = batch_size
         current_batch = batch_size
         all_scores: list[float] = []

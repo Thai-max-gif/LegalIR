@@ -411,8 +411,15 @@ def run_a100_production_gate(
     run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     # 10. Hugging Face Release Upload & Immutable Revision Capture
+    # Mock mode never touches the release repo: artifacts are synthetic.
     target_hf_repo = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
-    hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo)
+    if mock:
+        print("[*] Mock mode: skipping Hugging Face upload (no release commit).", flush=True)
+        manifest["huggingface"] = {"repo_id": target_hf_repo, "uploaded": False, "reason": "mock mode"}
+        run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        hf_commit = None
+    else:
+        hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo)
     if hf_commit:
         manifest["status"] = "RELEASED"
         manifest["huggingface"] = {

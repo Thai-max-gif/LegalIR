@@ -44,6 +44,7 @@ def run_kaggle_t4x2_gate(
     algorithm_config_path: Path | str = REPO_ROOT / "configs" / "algorithm" / "legalir_v2.yaml",
     runtime_profile_path: Path | str = REPO_ROOT / "configs" / "runtime" / "kaggle_t4x2.yaml",
     mock: bool = False,
+    sample_queries: int = 50,
 ) -> dict[str, Any]:
     """Execute the fail-closed Kaggle Dual-T4 CUDA Gate."""
     import pyarrow.parquet as pq
@@ -80,11 +81,16 @@ def run_kaggle_t4x2_gate(
         actual_sha = assert_exact_git_sha(expected_sha, repo_root=REPO_ROOT, is_production=not mock)
 
     # 3. Canonical Dataset Fingerprint Verification (Fail-Closed)
+    # Mock fakes GPU/training only: fingerprints stay truthful when data is present
+    # so mock reports remain chainable into the T4 gate.
     if not mock:
         ds_result = verify_dataset_fingerprint(dataset_dir)
         manifest_sha256 = ds_result.manifest_sha256
     else:
-        manifest_sha256 = "mock_manifest_sha256"
+        try:
+            manifest_sha256 = verify_dataset_fingerprint(dataset_dir).manifest_sha256
+        except FileNotFoundError:
+            manifest_sha256 = "mock_manifest_sha256"
 
     # 4. Config Fingerprints
     algo_sha256 = fingerprint_structured_config(algorithm_config_path)
@@ -101,12 +107,11 @@ def run_kaggle_t4x2_gate(
         (adapter_dir / "adapter_model.safetensors").write_bytes(b"MOCK_ADAPTER_BIN")
         reload_ok = True
     else:
-        # Load official data subset
+        # Load a small official query sample (only queries are needed for the smoke steps).
         queries_table = pq.read_table(dataset_dir / "queries_train.parquet")
-        qrels_table = pq.read_table(dataset_dir / "qrels_train.parquet")
-        chunks_table = pq.read_table(dataset_dir / "chunks.parquet")
 
-        q_dict = queries_table.slice(0, 50).to_pydict()
+        n_sample = max(1, int(sample_queries))
+        q_dict = queries_table.slice(0, n_sample).to_pydict()
         q_ids = [str(q) for q in q_dict["query_id"]]
         q_texts = {str(q): str(t) for q, t in zip(q_dict["query_id"], q_dict["question_norm"])}
 
@@ -144,7 +149,9 @@ def run_kaggle_t4x2_gate(
         loss_fn = torch.nn.BCEWithLogitsLoss()
 
         losses = []
-        for step in range(3):
+        per_step = 4
+        n_steps = max(1, min(3, len(q_ids) // per_step))
+        for step in range(n_steps):
             pairs = []
             labels = []
             for qid in q_ids[step * 4 : (step + 1) * 4]:
@@ -208,13 +215,13 @@ def run_kaggle_t4x2_gate(
         "real_models_only": True,
         "cpu_fallback_used": False,
         "model_fallback_used": False,
-        "optimizer_steps": 3,
+        "optimizer_steps": n_steps if not mock else 3,
         "initial_loss": initial_loss,
         "final_loss": final_loss,
         "weight_delta": weight_delta,
         "smoke_metrics": {
             "weight_delta": weight_delta,
-            "sample_queries": 50,
+            "sample_queries": len(q_ids) if not mock else 50,
             "initial_loss": initial_loss,
             "final_loss": final_loss,
         },
@@ -233,6 +240,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=str, default="artifacts/task1/gates", help="Output directory")
     parser.add_argument("--expected-sha", type=str, default="", help="Expected 40-char commit SHA")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode (CPU testing only)")
+    parser.add_argument("--sample-queries", type=int, default=50, help="Official queries to sample for smoke steps")
     args = parser.parse_args()
 
     try:
@@ -241,6 +249,7 @@ def main() -> int:
             output_dir=args.output_dir,
             expected_sha=args.expected_sha,
             mock=args.mock,
+            sample_queries=args.sample_queries,
         )
         return 0
     except Exception as exc:

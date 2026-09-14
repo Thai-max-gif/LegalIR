@@ -552,6 +552,11 @@ class RerankerTrainer:
 
         self.batch_size = int(self.config.get("batch_size", 16))
         self.max_length = int(self.config.get("max_length", 512))
+        # Clamp truncation to the model's positional capacity so long passages
+        # truncate instead of crashing position-embedding lookup.
+        _model_cap = getattr(getattr(model, "config", None), "max_position_embeddings", None)
+        if isinstance(_model_cap, int) and 0 < _model_cap < 100000:
+            self.max_length = min(self.max_length, _model_cap)
         self.learning_rate = float(self.config.get("learning_rate", 2e-5))
         self.weight_decay = float(self.config.get("weight_decay", 0.01))
         self.max_steps = self.config.get("max_steps", None)
