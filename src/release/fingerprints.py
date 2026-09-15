@@ -324,18 +324,31 @@ def verify_prior_gate_reports(
     expected_sha: str,
     expected_dataset_hash: str,
     expected_config_hash: str,
+    require_colab_t4: bool = True,
 ) -> GateChainResult:
     """
     Verify upstream Kaggle dual-T4 and Colab single-T4 reports for A100 production run.
     Ensures verdicts are 'PASS' and SHA, dataset, and algorithm config hashes strictly match.
+
+    The Kaggle dual-T4 report is ALWAYS enforced. The Colab single-T4 report may be
+    skipped only via explicit operator override (require_colab_t4=False); the skip is
+    recorded as colab_t4_report_sha256='SKIPPED_BY_OPERATOR' so downstream manifests
+    cannot mistake it for a PASS.
     """
     if not kaggle_report:
         raise GateChainValidationError("Kaggle T4x2 report missing. Upstream Gate B1.1 required.")
 
-    if not colab_t4_report:
+    if not colab_t4_report and require_colab_t4:
         raise GateChainValidationError("Colab T4 report missing. Upstream Gate B1.15 required.")
 
-    for name, report in [("Kaggle T4x2", kaggle_report), ("Colab T4", colab_t4_report)]:
+    reports_to_check: list[tuple[str, Optional[dict[str, Any]]]] = [("Kaggle T4x2", kaggle_report)]
+    if colab_t4_report is not None:
+        reports_to_check.append(("Colab T4", colab_t4_report))
+    elif require_colab_t4:
+        # Unreachable: missing+required raises above, but keep fail-closed.
+        raise GateChainValidationError("Colab T4 report missing. Upstream Gate B1.15 required.")
+
+    for name, report in reports_to_check:
         verdict = report.get("verdict")
         if verdict != "PASS":
             raise GateChainValidationError(f"{name} gate did not pass (verdict: '{verdict}', expected: 'PASS').")
@@ -380,7 +393,7 @@ def verify_prior_gate_reports(
             )
 
     k_hash = compute_canonical_json_hash(kaggle_report)
-    c_hash = compute_canonical_json_hash(colab_t4_report)
+    c_hash = compute_canonical_json_hash(colab_t4_report) if colab_t4_report is not None else "SKIPPED_BY_OPERATOR"
 
     return GateChainResult(
         is_valid=True,

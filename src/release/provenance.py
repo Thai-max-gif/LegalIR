@@ -70,6 +70,47 @@ def validate_sha(sha: str) -> bool:
     return bool(sha and isinstance(sha, str) and SHA_REGEX.match(sha.strip()))
 
 
+def validate_runtime_release_lineage(
+    runtime_sha: str,
+    release_sha: str,
+    repo_root: Union[Path, str] = ".",
+) -> Tuple[bool, list[str]]:
+    """Enforce the two-commit release model for A100 execution.
+
+    The frozen runtime commit (where GPU gate evidence was produced) must equal
+    the release checkout, or be a git ancestor of it with only allowlisted
+    evidence-file diffs (gate reports, freeze, notebooks, parameter audit).
+    Any code/config change between runtime and release invalidates the evidence.
+    Returns (is_valid, errors).
+    """
+    errors: list[str] = []
+    runtime = str(runtime_sha or "").strip().lower()
+    release = str(release_sha or "").strip().lower()
+    if not validate_sha(runtime):
+        errors.append(f"Invalid runtime_sha format: '{runtime_sha}'. Must be exact 40-hex Git SHA.")
+        return False, errors
+    if not validate_sha(release):
+        errors.append(f"Invalid release_sha format: '{release_sha}'. Must be exact 40-hex Git SHA.")
+        return False, errors
+    if runtime == release:
+        return True, []
+    if not is_git_ancestor(runtime, release, repo_root):
+        errors.append(
+            f"Runtime {runtime} is not an ancestor of release {release}; "
+            f"gate evidence does not lineage-bind to this checkout."
+        )
+        return False, errors
+    changed = get_git_diff_files(runtime, release, repo_root)
+    disallowed = [f for f in changed if f not in RELEASE_ONLY_DIFF_ALLOWLIST]
+    if disallowed:
+        errors.append(
+            f"Non-evidence changes between runtime {runtime[:7]} and release {release[:7]} "
+            f"invalidate gate evidence: {disallowed}"
+        )
+        return False, errors
+    return True, []
+
+
 @dataclasses.dataclass(frozen=True)
 class ReleaseApproval:
     schema_version: int

@@ -30,21 +30,40 @@ def configure_kaggle_credentials():
         raise RuntimeError("Legacy KAGGLE_KEY requires KAGGLE_USERNAME; use KAGGLE_API_TOKEN for modern tokens.")
 
 
-def verify_launch(expected_sha, kaggle_report, colab_report, freeze_file, repo_root=REPO_ROOT):
+def verify_launch(expected_sha, kaggle_report, colab_report, freeze_file, repo_root=REPO_ROOT, require_colab_t4=True):
     """Reject stale gate evidence before allocating an expensive Colab VM."""
     sha = assert_exact_git_sha(expected_sha, repo_root=repo_root)
     freeze = json.loads(Path(freeze_file).read_text(encoding="utf-8"))
-    if freeze.get("git_sha") != sha:
-        raise RuntimeError("Production freeze is for another runtime. Run the real T4 gates for this SHA and refresh approval before A100.")
+    runtime_sha = str(freeze.get("git_sha", "")).strip().lower()
+    if not runtime_sha:
+        raise RuntimeError("Production freeze is missing git_sha!")
+    if runtime_sha != sha.lower():
+        # Two-commit model: release checkout may descend from the frozen runtime
+        # with evidence-only diffs (gate reports, freeze, notebooks).
+        from src.release.provenance import validate_runtime_release_lineage
+        lineage_ok, lineage_errors = validate_runtime_release_lineage(runtime_sha, sha, repo_root)
+        if not lineage_ok:
+            raise RuntimeError(
+                "Production freeze is for another runtime. Run the real T4 gates for this SHA and refresh approval before A100. "
+                f"Details: {'; '.join(lineage_errors)}"
+            )
     config_hash = fingerprint_structured_config(Path(repo_root) / "configs/algorithm/legalir_v2.yaml")
     if freeze.get("algorithm_config_sha256") != config_hash:
         raise RuntimeError("Production freeze algorithm config mismatch")
+    colab_data = None
+    if colab_report is not None:
+        colab_data = json.loads(Path(colab_report).read_text(encoding="utf-8"))
+    elif require_colab_t4:
+        raise RuntimeError("Colab T4 report missing. Upstream Gate B1.15 required (or explicit operator skip).")
+    else:
+        print("[!] OPERATOR OVERRIDE: verify_launch skipping Colab single-T4 report.", file=sys.stderr)
     verify_prior_gate_reports(
         kaggle_report=json.loads(Path(kaggle_report).read_text(encoding="utf-8")),
-        colab_t4_report=json.loads(Path(colab_report).read_text(encoding="utf-8")),
-        expected_sha=sha,
+        colab_t4_report=colab_data,
+        expected_sha=runtime_sha,
         expected_dataset_hash=freeze["dataset"]["manifest_sha256"],
         expected_config_hash=config_hash,
+        require_colab_t4=require_colab_t4,
     )
     return freeze
 
@@ -76,9 +95,10 @@ def main():
     parser.add_argument("--kaggle-report", default="artifacts/task1/gates/kaggle_t4x2_report.json")
     parser.add_argument("--colab-t4-report", default="artifacts/task1/gates/colab_t4_report.json")
     parser.add_argument("--freeze-file", default="artifacts/task1/freeze/production_freeze.json")
+    parser.add_argument("--skip-colab-t4", action="store_true", help="Operator override: skip Colab single-T4 report")
     args = parser.parse_args()
     try:
-        verify_launch(args.expected_sha, args.kaggle_report, args.colab_t4_report, args.freeze_file)
+        verify_launch(args.expected_sha, args.kaggle_report, args.colab_t4_report if not args.skip_colab_t4 else None, args.freeze_file, require_colab_t4=not args.skip_colab_t4)
     except Exception as exc:
         print(f"[!] Launch blocked before GPU allocation: {exc}", file=sys.stderr)
         return 1

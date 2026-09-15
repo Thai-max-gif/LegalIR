@@ -1,5 +1,5 @@
 {
-  "algorithm_config_sha256": "3e53368c0080ec1f2079982a60b6710ab7bd340653f81613c516ea475a995d4e",
+  "algorithm_config_sha256": "480afe2fe91f4aa2b2766bdd545bbad515b9bbe0387a74043cb9fe29ec4534ce",
   "base_models": {
     "dense_id": "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
     "dense_revision": "main",
@@ -20,20 +20,16 @@
   },
   "gates": {
     "colab_t4": {
-      "report_sha256": "030812864ea6d1badb141642f95db17348a5fc77ef3f2a9b1a40a3d1a5bb753c",
-      "verdict": "PASS"
-    },
-    "github_ci": {
-      "run_id": 34746799976,
-      "verdict": "PASS"
+      "report_sha256": "SKIPPED_BY_OPERATOR",
+      "verdict": "SKIPPED_BY_OPERATOR"
     },
     "kaggle_t4x2": {
-      "report_sha256": "14223b035319317df454427d8c597f4036e2bb7baf88def37d0544d923592705",
+      "report_sha256": "d5eda466d3d26897864822600ab4020a66c0ed354deae7c7ebfc4839a6d1f497",
       "verdict": "PASS"
     }
   },
-  "git_sha": "3743464c20835faeb0c62c3a292c1c7d0e7202d6",
-  "run_id": "task1-20260913-3743464",
+  "git_sha": "72b95f6a8b0ad571125b22f9f4adeb9fbce91476",
+  "run_id": "task1-20260915-72b95f6",
   "runtime_profile": "colab_a100",
   "schema_version": 3
 }

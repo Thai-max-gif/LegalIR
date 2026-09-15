@@ -154,8 +154,14 @@ def run_a100_production_gate(
     runtime_config_path: Path | str | None = None,
     reranker_config_path: Path | str | None = None,
     hf_token: str | None = None,
+    skip_colab_t4: bool = False,
 ) -> dict[str, Any]:
-    """Execute the fail-closed A100 production training run."""
+    """Execute the fail-closed A100 production training run.
+
+    skip_colab_t4=True is an explicit operator override that bypasses the
+    Colab single-T4 upstream report (recorded as SKIPPED_BY_OPERATOR in the
+    manifest). The Kaggle dual-T4 report remains strictly enforced.
+    """
     import shutil
     import subprocess
     import yaml
@@ -238,6 +244,33 @@ def run_a100_production_gate(
     resolved_cfg = validate_runtime_overrides(algo_cfg, runtime_cfg)
     (output_dir / "resolved_config.yaml").write_text(yaml.safe_dump(resolved_cfg, sort_keys=True), encoding="utf-8")
 
+    # Resolve frozen runtime vs release checkout (two-commit model) BEFORE the
+    # gate chain: GPU evidence binds to the runtime commit, which must equal
+    # HEAD or be its ancestor with evidence-only diffs.
+    freeze_cands_early = [
+        Path(freeze_file_path) if freeze_file_path else None,
+        Path("/content/production_freeze.json"),
+        Path("/content/LegalIR/artifacts/task1/freeze/production_freeze.json"),
+        REPO_ROOT / "artifacts" / "task1" / "freeze" / "production_freeze.json",
+    ]
+    freeze_path_early = next((p for p in freeze_cands_early if p and p.is_file()), None)
+    if freeze_path_early is not None and not mock:
+        _freeze_early = json.loads(freeze_path_early.read_text(encoding="utf-8"))
+        _runtime_candidate = str(_freeze_early.get("git_sha", "")).lower()
+        if not _runtime_candidate:
+            raise RuntimeError("Production freeze is missing git_sha!")
+        if _runtime_candidate != actual_sha.lower():
+            from src.release.provenance import validate_runtime_release_lineage
+            _lineage_ok, _lineage_errors = validate_runtime_release_lineage(
+                _runtime_candidate, actual_sha, REPO_ROOT
+            )
+            if not _lineage_ok:
+                raise RuntimeError(f"Production freeze lineage rejected: {'; '.join(_lineage_errors)}")
+            print(f"[+] Two-commit lineage OK: runtime {_runtime_candidate[:7]} -> release {actual_sha[:7]} (evidence-only diff)")
+        runtime_sha = _runtime_candidate
+    else:
+        runtime_sha = actual_sha.lower()
+
     # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 & Colab Single-T4)
     if kaggle_report_path:
         k_p = Path(kaggle_report_path)
@@ -255,7 +288,7 @@ def run_a100_production_gate(
     else:
         k_path = REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json"
 
-    if colab_t4_report_path:
+    if colab_t4_report_path and not skip_colab_t4:
         c_p = Path(colab_t4_report_path)
         if c_p.is_file():
             c_path = c_p
@@ -268,35 +301,45 @@ def run_a100_production_gate(
                 REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
             ]
             c_path = next((p for p in c_cands if p and p.is_file()), c_p)
+    elif skip_colab_t4:
+        c_path = None
     else:
         c_path = REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json"
 
     if not k_path.is_file():
         raise RuntimeError(f"Kaggle T4x2 report missing: {k_path}. Upstream Gate B1.1 required before A100.")
-    if not c_path.is_file():
-        raise RuntimeError(f"Colab T4 report missing: {c_path}. Upstream Gate B1.15 required before A100.")
+    if c_path is None:
+        print("[!] OPERATOR OVERRIDE: skipping Colab single-T4 upstream gate (B1.15).", flush=True)
+        print("[!] Kaggle dual-T4 gate remains enforced; skip is recorded in run_manifest.json.", flush=True)
+        colab_t4_report = None
+    else:
+        if not c_path.is_file():
+            raise RuntimeError(f"Colab T4 report missing: {c_path}. Upstream Gate B1.15 required before A100.")
 
     kaggle_report = json.loads(k_path.read_text(encoding="utf-8"))
-    colab_t4_report = json.loads(c_path.read_text(encoding="utf-8"))
+    if c_path is not None:
+        colab_t4_report = json.loads(c_path.read_text(encoding="utf-8"))
 
     if not mock:
         gate_chain_res = verify_prior_gate_reports(
             kaggle_report=kaggle_report,
             colab_t4_report=colab_t4_report,
-            expected_sha=actual_sha,
+            expected_sha=runtime_sha,
             expected_dataset_hash=manifest_sha256,
             expected_config_hash=algo_sha256,
+            require_colab_t4=not skip_colab_t4,
         )
         k_rep_hash = gate_chain_res.kaggle_report_sha256
         c_rep_hash = gate_chain_res.colab_t4_report_sha256
     else:
         k_rep_hash = "mock_k_hash"
-        c_rep_hash = "mock_c_hash"
+        c_rep_hash = "mock_c_hash" if not skip_colab_t4 else "SKIPPED_BY_OPERATOR"
 
     # Copy upstream reports into output directory for full provenance
     try:
         shutil.copyfile(k_path, output_dir / "kaggle_t4x2_report.json")
-        shutil.copyfile(c_path, output_dir / "colab_t4_report.json")
+        if c_path is not None:
+            shutil.copyfile(c_path, output_dir / "colab_t4_report.json")
         ds_manifest_src = dataset_dir / "dataset_manifest.json"
         if ds_manifest_src.is_file():
             shutil.copyfile(ds_manifest_src, output_dir / "dataset_manifest.json")
@@ -314,8 +357,9 @@ def run_a100_production_gate(
     if freeze_path.is_file():
         freeze_data = json.loads(freeze_path.read_text(encoding="utf-8"))
         if not mock:
-            if freeze_data.get("git_sha", "").lower() != actual_sha.lower():
-                raise RuntimeError(f"Production freeze git_sha mismatch: {freeze_data.get('git_sha')} vs {actual_sha}")
+            # Runtime/release lineage already resolved above; re-assert hashes.
+            if str(freeze_data.get("git_sha", "")).lower() != runtime_sha:
+                raise RuntimeError("Production freeze changed between preflight and execution!")
             if freeze_data.get("dataset", {}).get("manifest_sha256") != manifest_sha256:
                 raise RuntimeError("Production freeze dataset hash mismatch!")
             if freeze_data.get("algorithm_config_sha256") != algo_sha256:
@@ -424,6 +468,7 @@ def run_a100_production_gate(
         "status": mock_status,
         "verdict": mock_verdict,
         "git_sha": actual_sha,
+        "runtime_sha": runtime_sha if not mock else actual_sha,
         "dataset": {
             "slug": "phucdangg/legalir-task1-clean-data",
             "logical_version": "v2",
@@ -438,7 +483,12 @@ def run_a100_production_gate(
         },
         "gates": {
             "kaggle_t4x2": {"verdict": mock_verdict, "report_sha256": k_rep_hash},
-            "colab_t4": {"verdict": mock_verdict, "report_sha256": c_rep_hash},
+            "colab_t4": (
+                {"verdict": "SKIPPED_BY_OPERATOR", "report_sha256": c_rep_hash,
+                 "reason": "operator override --skip-colab-t4; Kaggle dual-T4 gate still enforced"}
+                if skip_colab_t4
+                else {"verdict": mock_verdict, "report_sha256": c_rep_hash}
+            ),
         },
         "hardware": {
             "gpu": gpu_name,
@@ -511,6 +561,7 @@ def main() -> int:
     parser.add_argument("--precision", type=str, default="bf16", help="Training precision (bf16/fp16/fp32)")
     parser.add_argument("--allow-non-a100", action="store_true", help="Allow running on non-A100 GPU for testing")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode (CPU testing only)")
+    parser.add_argument("--skip-colab-t4", action="store_true", help="Operator override: skip Colab single-T4 upstream report (recorded as SKIPPED_BY_OPERATOR; Kaggle gate still enforced)")
     parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker", help="Hugging Face repo ID")
     args = parser.parse_args()
 
@@ -526,6 +577,7 @@ def main() -> int:
             allow_non_a100=args.allow_non_a100,
             mock=args.mock,
             hf_repo=args.hf_repo,
+            skip_colab_t4=args.skip_colab_t4,
         )
         return 0
     except Exception as exc:

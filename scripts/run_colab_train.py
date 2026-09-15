@@ -35,6 +35,7 @@ def run_colab_production_training(
     freeze_file_path: Path | str | None = None,
     algorithm_config_path: Path | str | None = None,
     runtime_profile_path: Path | str | None = None,
+    skip_colab_t4: bool = False,
 ) -> dict:
     """Execute Colab run delegating to the appropriate authoritative gate."""
     dataset_dir = Path(dataset_dir)
@@ -96,6 +97,7 @@ def run_colab_production_training(
                 hf_repo=hf_repo,
                 hf_token=hf_token,
                 precision=prec_norm,
+                skip_colab_t4=skip_colab_t4,
             )
         finally:
             if not mock and output_dir.is_dir():
@@ -119,6 +121,7 @@ def main() -> int:
     parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker")
     parser.add_argument("--freeze-file", type=str, default=None)
     parser.add_argument("--mode", type=str, default="full", choices=["full", "smoke"])
+    parser.add_argument("--skip-colab-t4", action="store_true", help="Operator override: skip Colab single-T4 upstream report")
     args = parser.parse_args()
 
     try:
@@ -134,6 +137,7 @@ def main() -> int:
             hf_repo=args.hf_repo,
             freeze_file_path=Path(args.freeze_file) if args.freeze_file else None,
             run_mode=args.mode,
+            skip_colab_t4=args.skip_colab_t4,
         )
         return 0
     except Exception as exc:
