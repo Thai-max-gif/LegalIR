@@ -60,8 +60,12 @@ def run_production_training(expected_sha: str):
         subprocess.run(["git", "clone", "https://github.com/silent9669/LegalIR.git", str(repo_dir)], check=True)
     
     print(f"[*] Checking out exact commit: {expected_sha}")
-    subprocess.run(["git", "fetch", "origin", expected_sha], cwd=repo_dir, check=True)
-    subprocess.run(["git", "checkout", "--detach", expected_sha], cwd=repo_dir, check=True)
+    subprocess.run(["git", "fetch", "origin", expected_sha], cwd=repo_dir, check=False)
+    res = subprocess.run(["git", "checkout", "--detach", expected_sha], cwd=repo_dir, capture_output=True, text=True)
+    if res.returncode != 0:
+        print("[*] Checkout fallback: unshallowing repository...")
+        subprocess.run(["git", "fetch", "--unshallow", "origin"], cwd=repo_dir, check=False)
+        subprocess.run(["git", "checkout", "--detach", expected_sha], cwd=repo_dir, check=True)
     
     if str(repo_dir) not in sys.path:
         sys.path.insert(0, str(repo_dir))
