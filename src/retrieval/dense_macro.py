@@ -135,6 +135,13 @@ class DenseMacroRetriever:
         if "_" in normalized:
             return normalized
 
+        # Pathological inputs hang ViTokenizer (observed: 5.7M-char anomalous
+        # chunk stalls segmentation indefinitely). Return unsegmented text;
+        # the encoder truncates to max_length downstream.
+        from src.retrieval.bm25_pyvi import PYVI_MAX_CHARS
+        if len(normalized) > PYVI_MAX_CHARS:
+            return normalized
+
         try:
             from pyvi import ViTokenizer
         except ImportError as exc:

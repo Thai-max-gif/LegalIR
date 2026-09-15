@@ -269,3 +269,74 @@ def test_bm25_pyvi_edge_cases_and_null_handling():
     for r_df, r_list in zip(res_df, res_list):
         assert r_df["doc_id"] == r_list["doc_id"]
         assert math.isclose(r_df["score"], r_list["score"], rel_tol=1e-5)
+
+
+def test_pyvi_oversized_input_falls_back_without_segmenter():
+    """Regression: multi-MB anomalous chunks must not hang ViTokenizer.
+
+    Production incident: a 5.7M-char chunk stalled indexing at ~88% (segmenter
+    >90s on one input vs ~1ms normal). Inputs over PYVI_MAX_CHARS must take
+    the regex fallback path quickly and be counted.
+    """
+    import time as _time
+
+    from src.retrieval.bm25_pyvi import (
+        PYVI_MAX_CHARS,
+        _tokenize_pyvi_cached,
+        get_pyvi_fallback_count,
+        tokenize_pyvi,
+    )
+
+    _tokenize_pyvi_cached.cache_clear()
+    before = get_pyvi_fallback_count()
+
+    normal = "quy định về bồi thường đất đai và hợp đồng lao động"
+    t0 = _time.time()
+    normal_toks = tokenize_pyvi(normal)
+    assert _time.time() - t0 < 5.0
+    assert len(normal_toks) > 0
+    assert get_pyvi_fallback_count() == before  # normal path: no fallback
+
+    monster = "quy định pháp luật " * ((PYVI_MAX_CHARS // 20) + 1000)
+    assert len(monster) > PYVI_MAX_CHARS
+    t0 = _time.time()
+    monster_toks = tokenize_pyvi(monster)
+    elapsed = _time.time() - t0
+    assert elapsed < 10.0, f"oversized input took {elapsed:.1f}s (hang risk)"
+    assert len(monster_toks) > 1000  # content still indexed via fallback
+    assert get_pyvi_fallback_count() == before + 1
+
+    # Small inputs keep exact legacy segmentation behavior
+    assert tokenize_pyvi(normal) == legacy_tokenize_pyvi(normal)
+
+    # End-to-end: fit() completes on a corpus containing a monster chunk
+    rows = [
+        {"chunk_id": "ok1", "doc_id": "d1", "text_norm": normal},
+        {"chunk_id": "big1", "doc_id": "d9", "text_norm": monster},
+    ]
+    ret = BM25PyViRetriever().fit(pd.DataFrame(rows))
+    assert len(ret.chunk_ids) == 2
+    assert len(ret.retrieve("bồi thường đất đai", top_k=2)) >= 1
+
+
+def test_dense_preprocess_skips_segmenter_on_oversized_input():
+    """Dense macro path must not hang on the same anomalous mega-chunks."""
+    import time as _time
+
+    from src.retrieval.bm25_pyvi import PYVI_MAX_CHARS
+    from src.retrieval.dense_macro import DenseMacroRetriever
+
+    retr = DenseMacroRetriever.__new__(DenseMacroRetriever)
+    retr.use_pyvi = True
+
+    monster = "điều khoản hợp đồng " * ((PYVI_MAX_CHARS // 20) + 1000)
+    assert len(monster) > PYVI_MAX_CHARS
+    t0 = _time.time()
+    out = retr.preprocess_text(monster)
+    elapsed = _time.time() - t0
+    assert elapsed < 10.0, f"dense preprocess took {elapsed:.1f}s (hang risk)"
+    assert isinstance(out, str) and len(out) > 0
+
+    # Normal inputs still go through PyVi segmentation
+    normal_out = retr.preprocess_text("quy định về bồi thường đất đai")
+    assert isinstance(normal_out, str) and len(normal_out) > 0

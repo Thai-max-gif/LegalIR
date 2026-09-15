@@ -225,11 +225,15 @@ def run_a100_production_gate(
             import shutil as _shutil
 
             _free_gib = float(_shutil.disk_usage(str(output_dir)).free) / (1024**3)
-            print(f"  • Disk free         : {_free_gib:.1f} GiB at {output_dir}", flush=True)
-            if _free_gib < 20.0:
-                raise RuntimeError(
-                    f"Insufficient free disk: {_free_gib:.1f} GiB at {output_dir}, need >= 20 GiB."
-                )
+            if _free_gib > 1048576.0:
+                # Absurd value (e.g. 2^63 bytes on overlayfs): capacity unknown.
+                print("  • Disk free         : unknown (filesystem reports implausible capacity)", flush=True)
+            else:
+                print(f"  • Disk free         : {_free_gib:.1f} GiB at {output_dir}", flush=True)
+                if _free_gib < 20.0:
+                    raise RuntimeError(
+                        f"Insufficient free disk: {_free_gib:.1f} GiB at {output_dir}, need >= 20 GiB."
+                    )
         except RuntimeError:
             raise
         except Exception:

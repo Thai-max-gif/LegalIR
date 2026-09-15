@@ -22,14 +22,34 @@ except ImportError:
 
 PYVI_TOKEN_PATTERN = re.compile(r'\b[a-zà-ỹ0-9_]+\b', re.IGNORECASE | re.UNICODE)
 
+# Hard cap on input length for PyVi word segmentation. PyVi's segmenter hangs
+# effectively forever on multi-megabyte inputs (observed: a 5.7M-char anomalous
+# "micro" chunk stalls ViTokenizer.tokenize beyond 90s vs ~1ms for normal
+# chunks, killing full-corpus indexing at ~88%). Legitimate chunks are bounded
+# (micro 100-250 tokens, fallback <= 1200 tokens); 20k chars is >10x headroom.
+# Oversized inputs fall back to regex word tokens (no compound joining).
+PYVI_MAX_CHARS = 20000
+
+_pyvi_fallback_chunks = 0
+
+
+def get_pyvi_fallback_count() -> int:
+    """Number of inputs that exceeded PYVI_MAX_CHARS and used regex fallback."""
+    return _pyvi_fallback_chunks
+
 
 @functools.lru_cache(maxsize=32768)
 def _tokenize_pyvi_cached(text: str) -> tuple[str, ...]:
     """Tokenize and memoize Vietnamese text segmentation for repeated strings."""
+    global _pyvi_fallback_chunks
     if not isinstance(text, str) or not text:
         return ()
     cleaned = clean_legal_text(text)
-    if ViTokenizer is not None:
+    if len(cleaned) > PYVI_MAX_CHARS:
+        # Pathological input: skip the segmenter (hang risk), regex-tokenize.
+        _pyvi_fallback_chunks += 1
+        segmented = cleaned
+    elif ViTokenizer is not None:
         segmented = ViTokenizer.tokenize(cleaned)
     else:
         segmented = cleaned
@@ -249,7 +269,8 @@ class BM25PyViRetriever:
         elapsed_total = time.time() - t_start
         print(
             f"[+] PyVi BM25 indexing complete: {N:,} chunks in {elapsed_total:.1f}s "
-            f"({N / max(0.001, elapsed_total):.1f} chunks/s) | vocabulary: {len(self.idf):,} terms.",
+            f"({N / max(0.001, elapsed_total):.1f} chunks/s) | vocabulary: {len(self.idf):,} terms | "
+            f"pyvi_length_fallbacks: {get_pyvi_fallback_count()}.",
             flush=True,
         )
 
