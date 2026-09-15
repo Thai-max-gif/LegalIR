@@ -61,8 +61,14 @@ def resolve_hf_token(explicit: str | None = None) -> str | None:
 def preflight_huggingface_access(
     repo_id: str,
     token: str | None = None,
+    allow_public_repo: bool = False,
 ) -> tuple[bool, str]:
-    """Require verified write access before spending GPU time on a release."""
+    """Require verified write access before spending GPU time on a release.
+
+    New repos are created private. Pushing to an existing PUBLIC repo requires
+    explicit opt-in (allow_public_repo=True); the override is recorded in the
+    run manifest so releases never go public by accident.
+    """
     token = resolve_hf_token(token)
     if not token:
         return False, "A Hugging Face write token is required (HF_TOKEN_WRITE or HF_TOKEN)."
@@ -73,14 +79,19 @@ def preflight_huggingface_access(
         api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
         api.auth_check(repo_id=repo_id, repo_type="model", write=True)
         # Enforce private visibility: exist_ok=True does not flip a public repo
-        # back to private, so an accidentally-public release repo must fail fast.
+        # back to private, so an accidentally-public release repo must fail fast
+        # unless the operator explicitly opts in.
+        visibility = "private"
         try:
             info = api.repo_info(repo_id=repo_id, repo_type="model")
             if getattr(info, "private", None) is False:
-                return False, f"HF repo {repo_id} exists but is PUBLIC; release requires a private repo."
+                visibility = "public"
+                if not allow_public_repo:
+                    return False, f"HF repo {repo_id} exists but is PUBLIC; release requires a private repo (or explicit opt-in)."
+                print(f"[!] OPERATOR OVERRIDE: pushing release artifacts to PUBLIC repo {repo_id}.", flush=True)
         except Exception:
             pass
-        return True, f"authenticated as @{user}; verified write access to {repo_id}"
+        return True, f"authenticated as @{user}; verified write access to {repo_id} ({visibility})"
     except Exception as exc:
         # Hub exceptions can contain request details; never log their raw text.
         return False, f"Cannot verify Hugging Face write access ({type(exc).__name__}); check token scopes, network, and huggingface_hub version."
@@ -90,6 +101,7 @@ def upload_artifacts_to_huggingface(
     output_dir: Path,
     repo_id: str = "dangphuc2109/legalir-task1-reranker",
     token: str | None = None,
+    allow_public_repo: bool = False,
 ) -> str:
     """Upload only final models, reports, logs and submissions; require a commit receipt."""
     from scripts.colab.artifacts import release_files
@@ -115,8 +127,8 @@ def upload_artifacts_to_huggingface(
         api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
         try:
             _info = api.repo_info(repo_id=repo_id, repo_type="model")
-            if getattr(_info, "private", None) is False:
-                raise RuntimeError(f"HF repo {repo_id} is PUBLIC; release requires a private repo.")
+            if getattr(_info, "private", None) is False and not allow_public_repo:
+                raise RuntimeError(f"HF repo {repo_id} is PUBLIC; release requires a private repo (or explicit opt-in).")
         except RuntimeError:
             raise
         except Exception:
@@ -155,12 +167,15 @@ def run_a100_production_gate(
     reranker_config_path: Path | str | None = None,
     hf_token: str | None = None,
     skip_colab_t4: bool = False,
+    hf_allow_public_repo: bool = False,
 ) -> dict[str, Any]:
     """Execute the fail-closed A100 production training run.
 
     skip_colab_t4=True is an explicit operator override that bypasses the
     Colab single-T4 upstream report (recorded as SKIPPED_BY_OPERATOR in the
     manifest). The Kaggle dual-T4 report remains strictly enforced.
+    hf_allow_public_repo=True permits pushing to an existing PUBLIC HF repo
+    (recorded in the manifest); new repos are always created private.
     """
     import shutil
     import subprocess
@@ -388,7 +403,7 @@ def run_a100_production_gate(
     # Hugging Face release preflight (fail fast on rejected tokens, before GPU burn)
     target_hf_repo_early = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
     if not mock:
-        hf_ok, hf_detail = preflight_huggingface_access(target_hf_repo_early, hf_token)
+        hf_ok, hf_detail = preflight_huggingface_access(target_hf_repo_early, hf_token, allow_public_repo=hf_allow_public_repo)
         print(f"  • Hugging Face       : {hf_detail}", flush=True)
         if not hf_ok:
             raise RuntimeError(f"Hugging Face access preflight failed: {hf_detail}")
@@ -511,7 +526,7 @@ def run_a100_production_gate(
         hf_commit = None
     else:
         try:
-            hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo, token=hf_token)
+            hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo, token=hf_token, allow_public_repo=hf_allow_public_repo)
         except RuntimeError:
             manifest["huggingface"] = {"repo_id": target_hf_repo, "uploaded": False}
             run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
@@ -522,6 +537,7 @@ def run_a100_production_gate(
             "commit_sha": hf_commit,
             "path_in_repo": f"runs/{manifest['run_id']}",
             "uploaded": True,
+            "public_repo_override": bool(hf_allow_public_repo),
         }
         # A manifest cannot contain its own commit SHA. It references the immutable
         # artifact commit; the local receipt also records the manifest commit.
@@ -562,6 +578,7 @@ def main() -> int:
     parser.add_argument("--allow-non-a100", action="store_true", help="Allow running on non-A100 GPU for testing")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode (CPU testing only)")
     parser.add_argument("--skip-colab-t4", action="store_true", help="Operator override: skip Colab single-T4 upstream report (recorded as SKIPPED_BY_OPERATOR; Kaggle gate still enforced)")
+    parser.add_argument("--hf-allow-public-repo", action="store_true", help="Operator override: allow pushing release to an existing PUBLIC HF repo (recorded in manifest)")
     parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker", help="Hugging Face repo ID")
     args = parser.parse_args()
 
@@ -578,6 +595,7 @@ def main() -> int:
             mock=args.mock,
             hf_repo=args.hf_repo,
             skip_colab_t4=args.skip_colab_t4,
+            hf_allow_public_repo=args.hf_allow_public_repo,
         )
         return 0
     except Exception as exc:

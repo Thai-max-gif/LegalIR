@@ -36,6 +36,7 @@ def run_colab_production_training(
     algorithm_config_path: Path | str | None = None,
     runtime_profile_path: Path | str | None = None,
     skip_colab_t4: bool = False,
+    hf_allow_public_repo: bool = False,
 ) -> dict:
     """Execute Colab run delegating to the appropriate authoritative gate."""
     dataset_dir = Path(dataset_dir)
@@ -98,6 +99,7 @@ def run_colab_production_training(
                 hf_token=hf_token,
                 precision=prec_norm,
                 skip_colab_t4=skip_colab_t4,
+                hf_allow_public_repo=hf_allow_public_repo,
             )
         finally:
             if not mock and output_dir.is_dir():
@@ -122,6 +124,7 @@ def main() -> int:
     parser.add_argument("--freeze-file", type=str, default=None)
     parser.add_argument("--mode", type=str, default="full", choices=["full", "smoke"])
     parser.add_argument("--skip-colab-t4", action="store_true", help="Operator override: skip Colab single-T4 upstream report")
+    parser.add_argument("--hf-allow-public-repo", action="store_true", help="Operator override: allow push to existing PUBLIC HF repo")
     args = parser.parse_args()
 
     try:
@@ -138,6 +141,7 @@ def main() -> int:
             freeze_file_path=Path(args.freeze_file) if args.freeze_file else None,
             run_mode=args.mode,
             skip_colab_t4=args.skip_colab_t4,
+            hf_allow_public_repo=args.hf_allow_public_repo,
         )
         return 0
     except Exception as exc:
