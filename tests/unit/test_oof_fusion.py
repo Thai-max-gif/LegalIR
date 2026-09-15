@@ -2,6 +2,36 @@ import numpy as np
 import pandas as pd
 from src.ranking.oof_features import FEATURE_COLUMNS, extract_candidate_features, FEATURE_SCHEMA_VERSION
 from src.ranking.fusion import LightGBMRanker
+from src.pipeline.oof_runner import OOFRunner
+
+
+def test_oof_question_memory_reuses_encoder_but_isolates_fold_state(tmp_path):
+    """Shared encoder construction must not share fold-local memory indexes."""
+    runner = OOFRunner(output_dir=tmp_path)
+    first = runner._build_question_memory(min_similarity=0.82)
+    second = runner._build_question_memory(min_similarity=0.82)
+
+    assert first is not second
+    assert first.dense_encoder is second.dense_encoder
+    assert runner.dense_device is None
+
+    first.fit(
+        [("q1", "first training question", None)],
+        {"q1": ["d1"]},
+        dense_embeddings=[[1.0, 0.0]],
+        encode_dense=False,
+    )
+    second.fit(
+        [("q2", "second training question", None)],
+        {"q2": ["d2"]},
+        dense_embeddings=[[0.0, 1.0]],
+        encode_dense=False,
+    )
+
+    assert first.training_query_ids == frozenset({"q1"})
+    assert second.training_query_ids == frozenset({"q2"})
+    assert first.qid_to_docs == {"q1": ["d1"]}
+    assert second.qid_to_docs == {"q2": ["d2"]}
 
 
 def test_oof_features_include_all_required_signals():

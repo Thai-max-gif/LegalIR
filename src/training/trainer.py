@@ -552,6 +552,14 @@ class RerankerTrainer:
 
         self.batch_size = int(self.config.get("batch_size", 16))
         self.max_length = int(self.config.get("max_length", 512))
+        self.num_workers = max(0, int(self.config.get("num_workers", self.config.get("dataloader_num_workers", 0))))
+        self.pin_memory = self.device.type == "cuda"
+        self._loader_options = {
+            "num_workers": self.num_workers,
+            "pin_memory": self.pin_memory,
+        }
+        if self.num_workers > 0:
+            self._loader_options["persistent_workers"] = True
         # Clamp truncation to the model's positional capacity so long passages
         # truncate instead of crashing position-embedding lookup.
         _model_cfg = getattr(model, "config", None)
@@ -608,6 +616,7 @@ class RerankerTrainer:
                 batch_size=self.batch_size,
                 sampler=self.train_sampler,
                 collate_fn=self.train_collator,
+                **self._loader_options,
             )
             self.is_group_mode = True
         else:
@@ -619,6 +628,7 @@ class RerankerTrainer:
                 batch_size=self.batch_size,
                 sampler=self.train_sampler,
                 collate_fn=self.train_collator,
+                **self._loader_options,
             )
             self.is_group_mode = False
 
@@ -630,6 +640,7 @@ class RerankerTrainer:
                 batch_size=self.batch_size,
                 shuffle=False,
                 collate_fn=RerankerPairCollator(self.tokenizer, max_length=self.max_length),
+                **self._loader_options,
             )
 
     def train(self, output_dir: str | Path | None = None) -> dict[str, Any]:

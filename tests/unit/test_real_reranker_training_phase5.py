@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import pytest
+import pandas as pd
 import torch
 import torch.nn as nn
 from transformers import BertConfig, BertForSequenceClassification, BertTokenizerFast
@@ -193,6 +194,134 @@ def tiny_bert_fixture(tmp_path: Path):
     tokenizer.save_pretrained(str(model_dir))
 
     return str(model_dir), model, tokenizer
+
+
+def test_dataloader_workers_preserve_sampler_order(tiny_bert_fixture):
+    """Exercise worker-backed iteration for train/group/validation loaders."""
+    _, model, tokenizer = tiny_bert_fixture
+    train_pairs = [
+        {"query_id": "q1", "query_text": "tok_1", "doc_id": "d1", "evidence_text": "tok_2", "label": 1.0},
+        {"query_id": "q1", "query_text": "tok_1", "doc_id": "d2", "evidence_text": "tok_3", "label": 0.0},
+        {"query_id": "q2", "query_text": "tok_4", "doc_id": "d3", "evidence_text": "tok_5", "label": 1.0},
+        {"query_id": "q2", "query_text": "tok_4", "doc_id": "d4", "evidence_text": "tok_6", "label": 0.0},
+        {"query_id": "q3", "query_text": "tok_7", "doc_id": "d5", "evidence_text": "tok_8", "label": 1.0},
+        {"query_id": "q3", "query_text": "tok_7", "doc_id": "d6", "evidence_text": "tok_9", "label": 0.0},
+    ]
+    val_pairs = [
+        {"query_id": "qv", "query_text": "tok_1", "doc_id": "dv1", "evidence_text": "tok_2", "label": 1.0},
+        {"query_id": "qv", "query_text": "tok_1", "doc_id": "dv2", "evidence_text": "tok_3", "label": 0.0},
+    ]
+    common_config = {
+        "batch_size": 2,
+        "max_length": 32,
+        "use_lora": False,
+        "num_workers": 1,
+    }
+    trainer = RerankerTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_data=train_pairs,
+        val_data=val_pairs,
+        config={**common_config, "loss_type": "bce"},
+        device="cpu",
+    )
+
+    assert trainer.num_workers == 1
+    assert trainer.train_loader.num_workers == 1
+    assert trainer.train_loader.persistent_workers is True
+    assert trainer.train_loader.pin_memory is False
+    assert trainer.val_loader is not None
+    assert trainer.val_loader.num_workers == 1
+    assert trainer.val_loader.persistent_workers is True
+
+    expected_indices = list(iter(trainer.train_sampler))
+    expected_qids = [trainer.train_dataset.records[idx]["query_id"] for idx in expected_indices]
+    train_iterator = iter(trainer.train_loader)
+    try:
+        train_batches = list(train_iterator)
+        actual_qids = [qid for batch in train_batches for qid in batch["query_ids"]]
+    finally:
+        shutdown = getattr(train_iterator, "_shutdown_workers", None)
+        if shutdown is not None:
+            shutdown()
+    assert actual_qids == expected_qids
+
+    val_iterator = iter(trainer.val_loader)
+    try:
+        val_batches = list(val_iterator)
+    finally:
+        shutdown = getattr(val_iterator, "_shutdown_workers", None)
+        if shutdown is not None:
+            shutdown()
+    assert [qid for batch in val_batches for qid in batch["query_ids"]] == ["qv", "qv"]
+
+    group_trainer = RerankerTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_data=train_pairs,
+        config={**common_config, "loss_type": "listwise"},
+        device="cpu",
+    )
+    assert group_trainer.train_loader.num_workers == 1
+    assert group_trainer.train_loader.persistent_workers is True
+    group_indices = list(iter(group_trainer.train_sampler))
+    group_expected_qids = [group_trainer.train_dataset.items[idx]["query_id"] for idx in group_indices]
+    group_iterator = iter(group_trainer.train_loader)
+    try:
+        group_batches = list(group_iterator)
+    finally:
+        shutdown = getattr(group_iterator, "_shutdown_workers", None)
+        if shutdown is not None:
+            shutdown()
+    assert [qid for batch in group_batches for qid in batch["query_ids"]] == group_expected_qids
+
+    zero_trainer = RerankerTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        train_data=train_pairs,
+        config={**common_config, "num_workers": 0, "loss_type": "bce"},
+        device="cpu",
+    )
+    assert zero_trainer.train_loader.num_workers == 0
+    assert zero_trainer.train_loader.persistent_workers is False
+
+
+def test_train_reranker_propagates_num_workers(tmp_path: Path, monkeypatch):
+    """Runtime worker override reaches the trainer without changing score settings."""
+    import importlib
+
+    train_module = importlib.import_module("src.training.train_reranker")
+    captured: dict[str, object] = {}
+
+    class StubTrainer:
+        batch_size = 2
+        gradient_accumulation_steps = 1
+
+        def __init__(self, *, config, **kwargs):
+            captured["config"] = config
+
+        def train(self, output_dir):
+            return {"status": "completed", "global_steps": 1}
+
+    monkeypatch.setattr(train_module, "RerankerTrainer", StubTrainer)
+    pairs_path = tmp_path / "pairs.parquet"
+    pd.DataFrame(
+        [
+            {"query_id": "q1", "label": 1.0},
+            {"query_id": "q1", "label": 0.0},
+        ]
+    ).to_parquet(pairs_path)
+
+    train_module.train_reranker(
+        pairs_file=pairs_path,
+        output_dir=tmp_path / "checkpoint",
+        config_path={"output_dir": "artifacts/local/test/checkpoint", "batch_size": 2},
+        base_model_name="mock",
+        num_workers=3,
+        enforce_full_coverage_steps=False,
+    )
+
+    assert captured["config"]["num_workers"] == 3
 
 
 def test_target_module_inspection_and_peft_setup(tiny_bert_fixture):

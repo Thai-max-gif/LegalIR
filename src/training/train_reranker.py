@@ -43,6 +43,7 @@ def train_reranker(
     learning_rate: float | None = None,
     device: str | None = None,
     precision: str | None = None,
+    num_workers: int | None = None,
     enforce_full_coverage_steps: bool = True,
 ) -> dict[str, Any]:
     """
@@ -73,6 +74,8 @@ def train_reranker(
         cfg["learning_rate"] = learning_rate
     if precision is not None:
         cfg["precision"] = precision
+    if num_workers is not None:
+        cfg["num_workers"] = max(0, int(num_workers))
 
     resolved_device = resolve_device(device if device is not None else cfg.get("device", "auto"))
 

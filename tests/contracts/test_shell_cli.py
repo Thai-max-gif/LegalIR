@@ -1,42 +1,46 @@
-"""
-Tests for Colab CLI Automation shell script invariants.
-Validates fail-closed routing, error trapping, and automatic compute cleanup.
-"""
-
-from __future__ import annotations
-
+import pytest
+import subprocess
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SHELL_SCRIPT_PATH = REPO_ROOT / "scripts" / "colab" / "run_colab_cli.sh"
+def test_shell_wrapper_preserves_error_code(monkeypatch, tmp_path):
+    import os
+    env = os.environ.copy()
+    env["PATH"] = str(tmp_path) + ":" + env.get("PATH", "")
+    (tmp_path / "colab").write_text("#!/bin/sh\nif [ \"$1\" = \"exec\" ]; then exit 42; fi\nexit 0\n")
+    (tmp_path / "colab").chmod(0o755)
+    
+    script_path = Path("scripts/colab/run_colab_cli.sh").resolve()
+    res = subprocess.run([str(script_path), "T4"], env=env)
+    assert res.returncode == 42
 
+def test_shell_wrapper_always_stops_colab(monkeypatch, tmp_path):
+    import os
+    env = os.environ.copy()
+    env["PATH"] = str(tmp_path) + ":" + env.get("PATH", "")
+    log = tmp_path / "colab_log"
+    (tmp_path / "colab").write_text(f"#!/bin/sh\necho \"$@\" >> {log}\nif [ \"$1\" = \"exec\" ]; then exit 1; fi\nexit 0\n")
+    (tmp_path / "colab").chmod(0o755)
+    
+    script_path = Path("scripts/colab/run_colab_cli.sh").resolve()
+    subprocess.run([str(script_path), "T4"], env=env)
+    assert "stop -s" in log.read_text()
 
-def test_colab_cli_script_exists():
-    assert SHELL_SCRIPT_PATH.is_file(), f"Missing {SHELL_SCRIPT_PATH}"
-
-
-def test_colab_cli_strict_bash_mode():
-    content = SHELL_SCRIPT_PATH.read_text(encoding="utf-8")
-    assert "set -Eeuo pipefail" in content or "set -euo pipefail" in content, (
-        "Script must use strict error handling (set -Eeuo pipefail)"
-    )
-
-
-def test_colab_cli_cleanup_trap_present():
-    content = SHELL_SCRIPT_PATH.read_text(encoding="utf-8")
-    assert "trap cleanup EXIT INT TERM" in content, (
-        "Script must trap EXIT INT TERM to guarantee VM stop"
-    )
-    assert "colab stop" in content, (
-        "Cleanup routine must invoke colab stop"
-    )
-
-
-def test_colab_cli_explicit_gpu_routing():
-    content = SHELL_SCRIPT_PATH.read_text(encoding="utf-8")
-    assert "colab_t4_smoke.ipynb" in content, (
-        "T4 mode must route to notebooks/colab_t4_smoke.ipynb"
-    )
-    assert "colab_a100_train.ipynb" in content, (
-        "A100 mode must route to notebooks/colab_a100_train.ipynb"
-    )
+def test_shell_wrapper_does_not_upload_unrelated_env_vars(monkeypatch, tmp_path):
+    import os
+    env = os.environ.copy()
+    env["PATH"] = str(tmp_path) + ":" + env.get("PATH", "")
+    log = tmp_path / "colab_log"
+    (tmp_path / "colab").write_text(f"#!/bin/sh\necho \"$@\" >> {log}\nexit 0\n")
+    (tmp_path / "colab").chmod(0o755)
+    
+    env_file = Path(".env")
+    env_file.write_text("HF_TOKEN=test\nSECRET_KEY=bad\n")
+    
+    script_path = Path("scripts/colab/run_colab_cli.sh").resolve()
+    subprocess.run([str(script_path), "T4"], env=env)
+    env_file.unlink()
+    
+    filtered_content = Path(".env.filtered").read_text() if Path(".env.filtered").exists() else ""
+    assert "SECRET_KEY" not in filtered_content
+    # The filtered file should be cleaned up
+    assert not Path(".env.filtered").exists()

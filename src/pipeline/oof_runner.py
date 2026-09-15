@@ -75,6 +75,7 @@ class OOFRunner:
         duplicate_groups_path: str | Path | None = None,
         split_provenance: dict[str, Any] | None = None,
         precision: str | None = None,
+        num_workers: int | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.index_dir = Path(index_dir)
@@ -105,6 +106,8 @@ class OOFRunner:
         self.dense_device = dense_device if dense_device is not None else device
         self.reranker_device = reranker_device if reranker_device is not None else device
         self.device = self.reranker_device
+        self.num_workers = None if num_workers is None else max(0, int(num_workers))
+        self._shared_memory_dense_encoder: DenseMacroRetriever | None = None
         self.smoke = bool(smoke)
         self.smoke_sample_size = int(smoke_sample_size)
         self.doc_disjoint = bool(doc_disjoint)
@@ -233,6 +236,15 @@ class OOFRunner:
                     print(f"Warning: Dense retriever could not be loaded from {dense_path}: {e}")
                     self.dense = None
 
+    def _build_question_memory(self, **kwargs: Any) -> TrainQuestionMemory:
+        """Build fold-local memory while reusing one dense encoder when no index exists."""
+        dense_encoder = self.dense
+        if dense_encoder is None:
+            if self._shared_memory_dense_encoder is None:
+                self._shared_memory_dense_encoder = DenseMacroRetriever()
+            dense_encoder = self._shared_memory_dense_encoder
+        return TrainQuestionMemory(dense_encoder=dense_encoder, **kwargs)
+
     def precompute_train_query_embeddings(self) -> dict[str, np.ndarray]:
         """Precompute normalized dense query embeddings once on GPU 0 and index by query_id."""
         if self.train_query_embeddings:
@@ -299,7 +311,7 @@ class OOFRunner:
         fold_train_qrels = {qid: self.qrels_map[qid] for qid in train_ids if qid in self.qrels_map}
 
         # Build fold-isolated question memory
-        memory = TrainQuestionMemory(min_similarity=0.82, dense_encoder=self.dense)
+        memory = self._build_question_memory(min_similarity=0.82)
         memory.fit(fold_train_queries, fold_train_qrels)
 
         # Strict validation: memory must not contain any validation query
@@ -489,6 +501,7 @@ class OOFRunner:
                     max_steps=5 if self.smoke else None,
                     device=self.reranker_device,
                     precision=self.precision,
+                    num_workers=self.num_workers,
                     enforce_full_coverage_steps=not self.smoke,
                 )
                 train_sec = time.time() - t_tr0
@@ -724,7 +737,7 @@ class OOFRunner:
         fold_train_queries = {qid: self.queries_map[qid] for qid in train_ids if qid in self.queries_map}
         fold_train_qrels = {qid: self.qrels_map[qid] for qid in train_ids if qid in self.qrels_map}
 
-        memory = TrainQuestionMemory(min_similarity=0.82, dense_encoder=self.dense)
+        memory = self._build_question_memory(min_similarity=0.82)
         memory.fit(fold_train_queries, fold_train_qrels)
 
         hybrid_engine = HybridSearchEngine(

@@ -189,6 +189,13 @@ def test_bm25_pyvi_df_list_parity_synthetic():
                 "clause": "",
                 "link": None,
             },
+            {
+                # Whitespace-only text_norm must also fall back to meaningful raw text.
+                "chunk_id": "c_ws",
+                "doc_id": "d_ws",
+                "text_norm": "   ",
+                "text_raw": "noi dung raw quan trong",
+            },
             {"chunk_id": "c3", "doc_id": "d3"},
         ]
     )
@@ -199,7 +206,7 @@ def test_bm25_pyvi_df_list_parity_synthetic():
     _assert_equivalence(
         opt_retriever,
         legacy_data,
-        ["tranh chấp đất đai", "nội dung thử nghiệm"],
+        ["tranh chấp đất đai", "nội dung thử nghiệm", "noi dung raw quan trong"],
     )
 
 

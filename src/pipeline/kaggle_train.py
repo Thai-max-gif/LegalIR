@@ -1103,6 +1103,9 @@ def run_kaggle_pipeline(
     from src.training.trainer import compute_coverage_required_steps
 
     reranker_cfg = yaml.safe_load(resolved_reranker_config.read_text(encoding="utf-8")) if resolved_reranker_config.exists() else {}
+    runtime_cfg = yaml.safe_load(resolved_runtime_config.read_text(encoding="utf-8")) if resolved_runtime_config.exists() else {}
+    runtime_section = runtime_cfg.get("runtime", {}) if isinstance(runtime_cfg, dict) else {}
+    runtime_num_workers = runtime_section.get("num_workers") if isinstance(runtime_section, dict) else None
     if is_full:
         configured_max_steps = reranker_cfg.get("max_steps", 500)
         if configured_max_steps is None:
@@ -1293,6 +1296,7 @@ def run_kaggle_pipeline(
         duplicate_groups_path=dup_groups_path,
         split_provenance=split_provenance_report,
         precision=_prec_norm,
+        num_workers=runtime_num_workers,
     )
     cv_report = oof_runner.run()
     oof_cv_time = max(0.001, time.perf_counter() - t_oof0)
@@ -1416,6 +1420,7 @@ def run_kaggle_pipeline(
         base_model_name="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
         device=reranker_device,
         precision=_prec_norm,
+        num_workers=runtime_num_workers,
         enforce_full_coverage_steps=is_full,
     )
     final_training_time = max(0.001, time.perf_counter() - t_tr0)

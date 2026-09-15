@@ -62,72 +62,64 @@ def preflight_huggingface_access(
     repo_id: str,
     token: str | None = None,
 ) -> tuple[bool, str]:
-    """Fail-fast access check for the Hugging Face release repo (fine-grained-token aware).
-
-    Returns (ok, detail). Anonymous (no token) is NOT an error here: uploads are
-    simply disabled and artifacts stay local. A present-but-rejected token IS an
-    error so paid GPU time is never burned on a run that cannot release.
-    Network errors warn-open to avoid blocking offline/air-gapped validation.
-    """
+    """Require verified write access before spending GPU time on a release."""
     token = resolve_hf_token(token)
     if not token:
-        return True, "anonymous: uploads disabled, artifacts stay local"
+        return False, "A Hugging Face write token is required (HF_TOKEN_WRITE or HF_TOKEN)."
     try:
         from huggingface_hub import HfApi
-        from huggingface_hub.utils import HfHubHTTPError
-    except Exception as exc:
-        return True, f"huggingface_hub unavailable, skipping access check ({exc})"
-    try:
         api = HfApi(token=token)
         user = api.whoami().get("name", "unknown")
+        api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+        api.auth_check(repo_id=repo_id, repo_type="model", write=True)
+        return True, f"authenticated as @{user}; verified write access to {repo_id}"
     except Exception as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status in (401, 403):
-            return False, f"token rejected by Hugging Face Hub (HTTP {status}): {exc}"
-        return True, f"whoami unreachable, skipping access check ({exc})"
-    try:
-        api.repo_info(repo_id=repo_id, repo_type="model")
-        return True, f"authenticated as @{user}; write access to {repo_id} will be verified at upload"
-    except Exception as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        if status == 404:
-            return True, f"authenticated as @{user}; repo {repo_id} missing and will be created at upload"
-        if status in (401, 403):
-            return False, f"token lacks access to {repo_id} (HTTP {status}): {exc}"
-        return True, f"repo check unreachable, skipping access check ({exc})"
+        # Hub exceptions can contain request details; never log their raw text.
+        return False, f"Cannot verify Hugging Face write access ({type(exc).__name__}); check token scopes, network, and huggingface_hub version."
 
 
 def upload_artifacts_to_huggingface(
     output_dir: Path,
     repo_id: str = "dangphuc2109/legalir-task1-reranker",
     token: str | None = None,
-) -> str | None:
-    """Upload production artifacts to Hugging Face Hub and return the commit SHA."""
-    # Robust token resolution: prefer explicit token, then write token, then standard token
+) -> str:
+    """Upload only final models, reports, logs and submissions; require a commit receipt."""
+    from scripts.colab.artifacts import release_files
+    import re
+
     token = resolve_hf_token(token)
-
     if not token:
-        print("[!] Note: No valid Hugging Face token (starting with 'hf_') found in environment. Skipping auto-upload.", flush=True)
-        return None
-
-    repo_id = repo_id or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
-    print(f"[*] Uploading production artifacts to Hugging Face repo: {repo_id} ...", flush=True)
+        raise RuntimeError("Hugging Face upload failed: write token required.")
+    selected = release_files(output_dir)
+    adapter_prefix = "checkpoints/reranker_final/"
+    if not any(adapter_prefix + name in selected for name in ("adapter_model.safetensors", "adapter_model.bin")):
+        raise RuntimeError("Missing final adapter weights; refusing incomplete release.")
+    for required in (adapter_prefix + "adapter_config.json", "submission.zip", "submission.json", "run_manifest.json"):
+        if required not in selected or (output_dir / required).stat().st_size == 0:
+            raise RuntimeError(f"Missing or empty release artifact: {required}")
+    manifest = json.loads((output_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    run_id = manifest["run_id"]
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+        raise RuntimeError("Invalid release run_id")
     try:
         from huggingface_hub import HfApi
         api = HfApi(token=token)
         api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
         commit = api.upload_folder(
             repo_id=repo_id,
+            repo_type="model",
             folder_path=str(output_dir),
-            commit_message=f"Upload A100 production training artifacts ({time.strftime('%Y-%m-%d %H:%M:%S')})",
-            ignore_patterns=["*.tmp", "*.lock", "*__pycache__*"],
+            path_in_repo=f"runs/{run_id}",
+            allow_patterns=selected,
+            commit_message=f"Upload A100 training artifacts: {run_id}",
         )
-        commit_sha = getattr(commit, "oid", str(commit))
-        print(f"[+] Successfully uploaded to Hugging Face: https://huggingface.co/{repo_id} (Commit: {commit_sha})", flush=True)
+        commit_sha = commit.oid
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
+            raise RuntimeError("Hub did not return an immutable commit SHA")
+        print(f"[+] Artifacts uploaded: https://huggingface.co/{repo_id}/tree/{commit_sha}/runs/{run_id}", flush=True)
         return commit_sha
     except Exception as exc:
-        print(f"[!] Warning: Failed uploading to Hugging Face ({exc}). Artifacts remain safe locally at {output_dir}.", flush=True)
-        return None
+        raise RuntimeError(f"Hugging Face upload failed ({type(exc).__name__}); artifacts remain at {output_dir}.") from None
 
 
 def run_a100_production_gate(
@@ -145,6 +137,7 @@ def run_a100_production_gate(
     precision: str = "bf16",
     runtime_config_path: Path | str | None = None,
     reranker_config_path: Path | str | None = None,
+    hf_token: str | None = None,
 ) -> dict[str, Any]:
     """Execute the fail-closed A100 production training run."""
     import shutil
@@ -310,7 +303,7 @@ def run_a100_production_gate(
     # Hugging Face release preflight (fail fast on rejected tokens, before GPU burn)
     target_hf_repo_early = hf_repo or os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
     if not mock:
-        hf_ok, hf_detail = preflight_huggingface_access(target_hf_repo_early)
+        hf_ok, hf_detail = preflight_huggingface_access(target_hf_repo_early, hf_token)
         print(f"  • Hugging Face       : {hf_detail}", flush=True)
         if not hf_ok:
             raise RuntimeError(f"Hugging Face access preflight failed: {hf_detail}")
@@ -329,17 +322,19 @@ def run_a100_production_gate(
     else:
         from src.pipeline.kaggle_train import run_kaggle_pipeline
         print(f"[*] Launching authoritative full 7,000-query A100 pipeline with {prec_norm.upper()}...", flush=True)
-        res = run_kaggle_pipeline(
-            data_dir=str(dataset_dir),
-            working_dir=str(output_dir),
-            run_mode="full",
-            device_contract=COLAB_A100_CONTRACT,
-            precision=prec_norm,
-            repo_root=str(REPO_ROOT),
-            runtime_config_path=str(runtime_config_path) if runtime_config_path else "configs/runtime/colab_a100.yaml",
-            reranker_config_path=str(reranker_config_path) if reranker_config_path else "configs/experiments/reranker_lora.yaml",
-            allow_nonstandard_production_devices=allow_non_a100,
-        )
+        from scripts.colab.artifacts import training_log
+        with training_log(output_dir):
+            res = run_kaggle_pipeline(
+                data_dir=str(dataset_dir),
+                working_dir=str(output_dir),
+                run_mode="full",
+                device_contract=COLAB_A100_CONTRACT,
+                precision=prec_norm,
+                repo_root=str(REPO_ROOT),
+                runtime_config_path=str(runtime_config_path) if runtime_config_path else str(REPO_ROOT / "configs/runtime/colab_a100.yaml"),
+                reranker_config_path=str(reranker_config_path) if reranker_config_path else str(REPO_ROOT / "configs/experiments/reranker_lora.yaml"),
+                allow_nonstandard_production_devices=allow_non_a100,
+            )
         print(f"[+] Pipeline completed with status: {res.status}", flush=True)
         # run_kaggle_pipeline writes submissions/submission.zip; mirror to output root
         # expected by validation, checksums, HF upload, and notebook Cell 5.
@@ -365,10 +360,10 @@ def run_a100_production_gate(
 
     # 8. Generate File Checksums
     checksums: dict[str, str] = {}
-    for p in output_dir.rglob("*"):
-        if p.is_file() and p.name not in ("checksums.sha256", "run_manifest.json"):
-            rel_name = str(p.relative_to(output_dir))
-            checksums[rel_name] = compute_file_sha256(p)
+    from scripts.colab.artifacts import release_files
+    for rel_name in release_files(output_dir):
+        if rel_name not in ("checksums.sha256", "run_manifest.json"):
+            checksums[rel_name] = compute_file_sha256(output_dir / rel_name)
 
     checksums_file = output_dir / "checksums.sha256"
     checksums_lines = [f"{sha}  {fname}" for fname, sha in sorted(checksums.items())]
@@ -423,30 +418,38 @@ def run_a100_production_gate(
         run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         hf_commit = None
     else:
-        hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo)
+        try:
+            hf_commit = upload_artifacts_to_huggingface(output_dir=output_dir, repo_id=target_hf_repo, token=hf_token)
+        except RuntimeError:
+            manifest["huggingface"] = {"repo_id": target_hf_repo, "uploaded": False}
+            run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            raise
     if hf_commit:
-        manifest["status"] = "RELEASED"
         manifest["huggingface"] = {
             "repo_id": target_hf_repo,
             "commit_sha": hf_commit,
+            "path_in_repo": f"runs/{manifest['run_id']}",
             "uploaded": True,
         }
-        # Re-save manifest with confirmed commit and re-upload manifest
-        run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        # A manifest cannot contain its own commit SHA. It references the immutable
+        # artifact commit; the local receipt also records the manifest commit.
+        final_manifest = {**manifest, "status": "RELEASED"}
         try:
             from huggingface_hub import HfApi
-            api = HfApi(token=resolve_hf_token())
-            if resolve_hf_token() is None:
-                print("[!] Warning: no HF token available for manifest re-upload; skipping.", flush=True)
-            else:
-                api.upload_file(
-                    path_or_fileobj=str(run_manifest_path),
-                    path_in_repo="run_manifest.json",
-                    repo_id=target_hf_repo,
-                    commit_message=f"Update final release manifest with commit {hf_commit[:8]}",
-                )
-        except Exception:
-            pass
+            api = HfApi(token=resolve_hf_token(hf_token))
+            receipt = api.upload_file(
+                path_or_fileobj=json.dumps(final_manifest, indent=2, sort_keys=True).encode("utf-8"),
+                path_in_repo=f"runs/{manifest['run_id']}/run_manifest.json",
+                repo_id=target_hf_repo,
+                repo_type="model",
+                commit_message=f"Record artifact commit {hf_commit[:8]}",
+            )
+        except Exception as exc:
+            run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            raise RuntimeError(f"Release manifest upload failed ({type(exc).__name__}); artifact commit is {hf_commit}.") from None
+        manifest = final_manifest
+        manifest["huggingface"]["manifest_commit_sha"] = receipt.oid
+        run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     print("=================================================================", flush=True)
     print(f"[+] A100 Production Run Completed: {run_manifest_path}", flush=True)

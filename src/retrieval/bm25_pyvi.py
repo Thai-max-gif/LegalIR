@@ -23,7 +23,7 @@ except ImportError:
 PYVI_TOKEN_PATTERN = re.compile(r'\b[a-zà-ỹ0-9_]+\b', re.IGNORECASE | re.UNICODE)
 
 
-@functools.lru_cache(maxsize=262144)
+@functools.lru_cache(maxsize=32768)
 def _tokenize_pyvi_cached(text: str) -> tuple[str, ...]:
     """Tokenize and memoize Vietnamese text segmentation for repeated strings."""
     if not isinstance(text, str) or not text:
@@ -105,7 +105,7 @@ class BM25PyViRetriever:
                 norms = chunks["text_norm"].fillna("").astype(str).tolist() if "text_norm" in chunks else [""] * n_rows
                 raws = chunks["text_raw"].fillna("").astype(str).tolist() if "text_raw" in chunks else [""] * n_rows
                 texts = chunks["text"].fillna("").astype(str).tolist() if "text" in chunks else [""] * n_rows
-                bodies = [n or r or t for n, r, t in zip(norms, raws, texts)]
+                bodies = [(n.strip() or r.strip() or t.strip()) for n, r, t in zip(norms, raws, texts)]
             else:
                 bodies = [""] * n_rows
             titles = chunks["title"].fillna("").astype(str).tolist() if "title" in chunks else [""] * n_rows

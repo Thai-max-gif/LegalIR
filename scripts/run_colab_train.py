@@ -59,7 +59,7 @@ def run_colab_production_training(
             Path("/content/LegalIR/artifacts/task1/gates/kaggle_t4x2_report.json"),
             REPO_ROOT / "artifacts" / "task1" / "gates" / "kaggle_t4x2_report.json",
         ]
-        k_rep = next((p for p in k_cands if p and p.is_file()), k_cands[-1])
+        k_rep = Path(smoke_report_path) if smoke_report_path else next((p for p in k_cands if p and p.is_file()), k_cands[-1])
 
         c_cands = [
             Path(colab_t4_report_path) if colab_t4_report_path else None,
@@ -67,7 +67,7 @@ def run_colab_production_training(
             Path("/content/LegalIR/artifacts/task1/gates/colab_t4_report.json"),
             REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
         ]
-        c_rep = next((p for p in c_cands if p and p.is_file()), c_cands[-1])
+        c_rep = Path(colab_t4_report_path) if colab_t4_report_path else next((p for p in c_cands if p and p.is_file()), c_cands[-1])
 
         if mock:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -81,20 +81,29 @@ def run_colab_production_training(
         prec_norm = str(precision or "bf16").lower().strip()
         if prec_norm in ("bfloat16", "bf16"):
             prec_norm = "bf16"
-        return run_a100_production_gate(
-            dataset_dir=dataset_dir,
-            output_dir=output_dir,
-            expected_sha=expected_sha,
-            algorithm_config_path=algorithm_config_path or (REPO_ROOT / "configs" / "algorithm" / "legalir_v2.yaml"),
-            runtime_profile_path=runtime_profile_path or (REPO_ROOT / "configs" / "runtime" / "colab_a100.yaml"),
-            kaggle_report_path=k_rep,
-            colab_t4_report_path=c_rep,
-            freeze_file_path=freeze_file_path or (REPO_ROOT / "artifacts" / "task1" / "freeze" / "production_freeze.json"),
-            allow_non_a100=allow_non_a100,
-            mock=mock,
-            hf_repo=hf_repo,
-            precision=prec_norm,
-        )
+        try:
+            return run_a100_production_gate(
+                dataset_dir=dataset_dir,
+                output_dir=output_dir,
+                expected_sha=expected_sha,
+                algorithm_config_path=algorithm_config_path or (REPO_ROOT / "configs" / "algorithm" / "legalir_v2.yaml"),
+                runtime_profile_path=runtime_profile_path or (REPO_ROOT / "configs" / "runtime" / "colab_a100.yaml"),
+                kaggle_report_path=k_rep,
+                colab_t4_report_path=c_rep,
+                freeze_file_path=freeze_file_path or (REPO_ROOT / "artifacts" / "task1" / "freeze" / "production_freeze.json"),
+                allow_non_a100=allow_non_a100,
+                mock=mock,
+                hf_repo=hf_repo,
+                hf_token=hf_token,
+                precision=prec_norm,
+            )
+        finally:
+            if not mock and output_dir.is_dir():
+                from scripts.colab.artifacts import build_recovery_archive
+                try:
+                    build_recovery_archive(output_dir)
+                except Exception as exc:
+                    print(f"[!] Recovery archive unavailable ({type(exc).__name__}); individual artifacts remain at {output_dir}.", file=sys.stderr)
 
 
 def main() -> int:

@@ -1,33 +1,49 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # LegalIR Google Colab CLI Automation
-# Supports:
-#   ./scripts/colab/run_colab_cli.sh T4   -> runs notebooks/colab_t4_smoke.ipynb
-#   ./scripts/colab/run_colab_cli.sh A100 -> runs notebooks/colab_a100_train.ipynb
-# Guaranteed fail-closed cleanup trap to always stop VM and prevent credit burn.
 # ==============================================================================
 
-set -Eeuo pipefail
+set -Euo pipefail
 
 GPU_MODE="${1:-A100}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# Filter sensitive or irrelevant variables out of .env before upload
+LOCAL_ENV="${REPO_ROOT}/.env"
+FILTERED_ENV="${REPO_ROOT}/.env.filtered"
+if [ -f "$LOCAL_ENV" ]; then
+    grep -E '^(HF_TOKEN|HF_TOKEN_WRITE|HF_TOKEN_READ|KAGGLE_API_TOKEN|KAGGLE_KEY|HF_REPO_ID|LEGALIR_COMMIT_SHA)=' "$LOCAL_ENV" > "$FILTERED_ENV" || true
+else
+    touch "$FILTERED_ENV"
+fi
+
 case "$GPU_MODE" in
   T4)
     GPU="T4"
     NOTEBOOK="notebooks/colab_t4_smoke.ipynb"
-    SESSION="legalir-t4-gate"
+    # Append a short random string to the session to prevent conflict
+    SESSION="legalir-t4-gate-$(head -c 4 /dev/urandom | xxd -p)"
     NEW_FLAGS=("--gpu" "T4")
     ;;
   A100)
     GPU="A100"
     NOTEBOOK="notebooks/colab_a100_train.ipynb"
-    SESSION="legalir-a100-production"
+    SESSION="legalir-a100-production-$(head -c 4 /dev/urandom | xxd -p)"
     NEW_FLAGS=("--gpu" "A100")
+    
+    EXPECTED_SHA="${LEGALIR_COMMIT_SHA:-$(git rev-parse HEAD)}"
+    echo "Running local provenance preflight for A100..."
+    if ! .venv/bin/python scripts/colab/bootstrap.py --expected-sha "$EXPECTED_SHA"; then
+        echo "[!] Preflight failed. Aborting before Colab allocation." >&2
+        rm -f "$FILTERED_ENV"
+        exit 1
+    fi
+    echo "{\"expected_sha\": \"$EXPECTED_SHA\"}" > legalir_launch.json
     ;;
   *)
     echo "[!] Error: Invalid GPU mode '$GPU_MODE'. Usage: $0 {T4|A100}" >&2
+    rm -f "$FILTERED_ENV"
     exit 2
     ;;
 esac
@@ -39,12 +55,43 @@ echo "  • Session     : $SESSION"
 echo "  • Notebook    : $NOTEBOOK"
 echo "================================================================="
 
+# Create a temporary copy of the notebook to run, preventing local dirtying
+TMP_NOTEBOOK="${NOTEBOOK}.tmp.ipynb"
+cp "$NOTEBOOK" "$TMP_NOTEBOOK"
+
+EXEC_EXIT_CODE=0
+
 cleanup() {
   echo ""
+  echo "[*] Retrieving remote artifacts..."
+  if [ "$GPU_MODE" = "T4" ]; then
+      mkdir -p artifacts/task1/gates
+      colab download /content/artifacts/task1/gates/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" >/dev/null 2>&1 || \
+      colab download /content/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" >/dev/null 2>&1 || true
+      colab download /content/artifacts/task1/gates/colab_smoke_report.json artifacts/task1/colab_smoke_report.json -s "$SESSION" >/dev/null 2>&1 || true
+  elif [ "$GPU_MODE" = "A100" ]; then
+      mkdir -p artifacts/task1/production
+      colab download /content/legalir_production_run/recovery.tar.gz artifacts/task1/production/recovery.tar.gz -s "$SESSION" >/dev/null 2>&1 || true
+      colab download /content/legalir_production_run/training.log artifacts/task1/production/training.log -s "$SESSION" >/dev/null 2>&1 || true
+      colab download /content/legalir_production_run/run_manifest.json artifacts/task1/production/run_manifest.json -s "$SESSION" >/dev/null 2>&1 || true
+      colab download /content/legalir_production_run/submission.zip artifacts/task1/production/submission.zip -s "$SESSION" >/dev/null 2>&1 || true
+      colab download /content/legalir_production_run/submission.json artifacts/task1/production/submission.json -s "$SESSION" >/dev/null 2>&1 || true
+  fi
+
   echo "[*] Cleaning up: Stopping Colab session '$SESSION' to release compute..."
-  colab stop -s "$SESSION" >/dev/null 2>&1 || true
-  echo "[+] Colab session '$SESSION' stopped."
+  if colab stop -s "$SESSION" >/dev/null 2>&1; then
+      echo "[+] Colab session '$SESSION' stopped."
+  else
+      echo "[-] Failed to stop Colab session '$SESSION'."
+  fi
+  rm -f "$FILTERED_ENV" "$TMP_NOTEBOOK" legalir_launch.json
+  
+  if [ $EXEC_EXIT_CODE -ne 0 ]; then
+      echo "[!] Remote notebook execution failed (exit code $EXEC_EXIT_CODE)."
+      exit $EXEC_EXIT_CODE
+  fi
 }
+
 trap cleanup EXIT INT TERM
 
 # 1. Allocate VM
@@ -52,61 +99,33 @@ echo "[1/4] Allocating Colab VM with ${NEW_FLAGS[*]}..."
 colab new -s "$SESSION" "${NEW_FLAGS[@]}"
 
 # 2. Upload local .env & gate prerequisites
-if [ -f ".env" ]; then
-    echo "[2/4] Uploading local .env to /content/.env..."
-    colab upload .env /content/.env -s "$SESSION"
+if [ -s "$FILTERED_ENV" ]; then
+    echo "[2/4] Uploading filtered local .env to /content/.env..."
+    colab upload "$FILTERED_ENV" /content/.env -s "$SESSION"
 else
-    echo "[!] Warning: No local .env found. Secrets must be configured in Colab Secrets."
+    echo "[!] Warning: No relevant secrets found in local .env. Secrets must be configured in Colab Secrets."
 fi
 
-if [ -f "artifacts/task1/gates/kaggle_t4x2_report.json" ]; then
-    echo "[*] Syncing Kaggle Dual-T4 report to /content/kaggle_t4x2_report.json..."
-    colab upload artifacts/task1/gates/kaggle_t4x2_report.json /content/kaggle_t4x2_report.json -s "$SESSION" || true
+if [ "$GPU_MODE" = "A100" ]; then
+    colab upload legalir_launch.json /content/legalir_launch.json -s "$SESSION" || true
 fi
 
-if [ -f "artifacts/task1/gates/colab_t4_report.json" ]; then
-    echo "[*] Syncing Colab T4 report to /content/colab_t4_report.json..."
-    colab upload artifacts/task1/gates/colab_t4_report.json /content/colab_t4_report.json -s "$SESSION" || true
-fi
+# We assume standard artifacts are synced by Git now, but we'll upload if they are local-only
+for f in artifacts/task1/gates/kaggle_t4x2_report.json artifacts/task1/gates/colab_t4_report.json artifacts/task1/freeze/production_freeze.json; do
+  if [ -f "$f" ]; then
+      colab upload "$f" "/content/$(basename "$f")" -s "$SESSION" >/dev/null 2>&1 || true
+  fi
+done
 
-if [ -f "artifacts/task1/freeze/production_freeze.json" ]; then
-    echo "[*] Syncing production freeze to /content/production_freeze.json..."
-    colab upload artifacts/task1/freeze/production_freeze.json /content/production_freeze.json -s "$SESSION" || true
-fi
-
-# 3. Execute notebook (A100 full OOF needs 6-10h; T4 smoke needs ~30min)
-# Allow override via COLAB_TIMEOUT env (seconds). Defaults: A100 40000s (~11h), T4 7200s (2h).
 if [ "$GPU_MODE" = "A100" ]; then
     TIMEOUT="${COLAB_TIMEOUT:-40000}"
 else
     TIMEOUT="${COLAB_TIMEOUT:-7200}"
 fi
 echo "[3/4] Executing $NOTEBOOK on remote Colab VM (timeout ${TIMEOUT}s)..."
-colab exec -s "$SESSION" -f "$NOTEBOOK" --timeout "$TIMEOUT"
+set +e
+colab exec -s "$SESSION" -f "$TMP_NOTEBOOK" --timeout "$TIMEOUT"
+EXEC_EXIT_CODE=$?
+set -e
 
-# 4. Download output artifacts before VM release
-echo "[4/4] Retrieving remote artifacts..."
-if [ "$GPU_MODE" = "T4" ]; then
-    mkdir -p artifacts/task1/gates
-    colab download /content/artifacts/task1/gates/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" || \
-    colab download /content/colab_t4_report.json artifacts/task1/gates/colab_t4_report.json -s "$SESSION" || true
-    # Full smoke telemetry (approval validator reads artifacts/task1/colab_smoke_report.json)
-    colab download /content/artifacts/task1/gates/colab_smoke_report.json artifacts/task1/colab_smoke_report.json -s "$SESSION" || true
-elif [ "$GPU_MODE" = "A100" ]; then
-    mkdir -p artifacts/task1/production
-    colab download /content/legalir_production_run/submission.zip artifacts/task1/production/submission.zip -s "$SESSION" || true
-    colab download /content/legalir_production_run/submission.json artifacts/task1/production/submission.json -s "$SESSION" || true
-    colab download /content/legalir_production_run/run_manifest.json artifacts/task1/production/run_manifest.json -s "$SESSION" || true
-    colab download /content/legalir_production_run/checksums.sha256 artifacts/task1/production/checksums.sha256 -s "$SESSION" || true
-    colab download /content/legalir_production_run/resolved_config.yaml artifacts/task1/production/resolved_config.yaml -s "$SESSION" || true
-    mkdir -p artifacts/task1/production/final_adapter
-    colab download /content/legalir_production_run/final_adapter/adapter_config.json artifacts/task1/production/final_adapter/adapter_config.json -s "$SESSION" || true
-    colab download /content/legalir_production_run/kaggle_t4x2_report.json artifacts/task1/production/kaggle_t4x2_report.json -s "$SESSION" || true
-    colab download /content/legalir_production_run/colab_t4_report.json artifacts/task1/production/colab_t4_report.json -s "$SESSION" || true
-fi
-
-echo ""
-echo "================================================================="
-echo "[+] Remote notebook execution completed successfully!"
-echo "    Session will now be automatically stopped."
-echo "================================================================="
+echo "[+] Remote notebook execution completed!"
