@@ -47,7 +47,7 @@ TIMEOUT_SECONDS = 18000
 
 @app.function(
     image=image,
-    gpu=modal.gpu.A100(),
+    gpu="A100",
     timeout=TIMEOUT_SECONDS,
     volumes={VOLUME_MOUNT: volume},
     secrets=[
