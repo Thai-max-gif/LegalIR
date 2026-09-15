@@ -315,88 +315,68 @@ def validate_runtime_overrides(
 class GateChainResult:
     is_valid: bool
     kaggle_report_sha256: str
-    colab_t4_report_sha256: str
 
 
 def verify_prior_gate_reports(
     kaggle_report: Optional[dict[str, Any]],
-    colab_t4_report: Optional[dict[str, Any]],
     expected_sha: str,
     expected_dataset_hash: str,
     expected_config_hash: str,
-    require_colab_t4: bool = True,
 ) -> GateChainResult:
     """
-    Verify upstream Kaggle dual-T4 and Colab single-T4 reports for A100 production run.
-    Ensures verdicts are 'PASS' and SHA, dataset, and algorithm config hashes strictly match.
-
-    The Kaggle dual-T4 report is ALWAYS enforced. The Colab single-T4 report may be
-    skipped only via explicit operator override (require_colab_t4=False); the skip is
-    recorded as colab_t4_report_sha256='SKIPPED_BY_OPERATOR' so downstream manifests
-    cannot mistake it for a PASS.
+    Verify the upstream Kaggle dual-T4 report for A100 production run.
+    Ensures verdict is 'PASS' and SHA, dataset, and algorithm config hashes
+    strictly match. Kaggle T4x2 (B1.1) is the sole pre-A100 hardware gate;
+    the retired Colab single-T4 notebook is no longer part of the chain.
     """
     if not kaggle_report:
         raise GateChainValidationError("Kaggle T4x2 report missing. Upstream Gate B1.1 required.")
 
-    if not colab_t4_report and require_colab_t4:
-        raise GateChainValidationError("Colab T4 report missing. Upstream Gate B1.15 required.")
+    name, report = "Kaggle T4x2", kaggle_report
+    verdict = report.get("verdict")
+    if verdict != "PASS":
+        raise GateChainValidationError(f"{name} gate did not pass (verdict: '{verdict}', expected: 'PASS').")
 
-    reports_to_check: list[tuple[str, Optional[dict[str, Any]]]] = [("Kaggle T4x2", kaggle_report)]
-    if colab_t4_report is not None:
-        reports_to_check.append(("Colab T4", colab_t4_report))
-    elif require_colab_t4:
-        # Unreachable: missing+required raises above, but keep fail-closed.
-        raise GateChainValidationError("Colab T4 report missing. Upstream Gate B1.15 required.")
+    devices = report.get("devices", [])
+    if isinstance(devices, (str, bytes)):
+        device_candidates: list[Any] = [devices]
+    elif isinstance(devices, (list, tuple)):
+        device_candidates = list(devices)
+    elif devices:
+        device_candidates = [devices]
+    else:
+        device_candidates = []
+    # Legacy smoke reports carry `gpu`/`gpu_name`/`device_names` instead of
+    # `devices`. All hardware identity fields must be scanned so a forged
+    # PASS with mock hardware cannot chain.
+    for _hw_key in ("gpu", "gpu_name", "device_names"):
+        _hw_val = report.get(_hw_key, "")
+        if isinstance(_hw_val, (list, tuple)):
+            device_candidates.extend(_hw_val)
+        elif _hw_val:
+            device_candidates.append(_hw_val)
+    if any("mock" in str(d).lower() for d in device_candidates if d is not None and str(d)):
+        raise GateChainValidationError(f"{name} gate report contains mock hardware devices: {device_candidates}")
 
-    for name, report in reports_to_check:
-        verdict = report.get("verdict")
-        if verdict != "PASS":
-            raise GateChainValidationError(f"{name} gate did not pass (verdict: '{verdict}', expected: 'PASS').")
+    r_sha = report.get("git_sha")
+    if not r_sha or r_sha.lower() != expected_sha.lower():
+        raise GateChainValidationError(
+            f"{name} Git SHA mismatch! Report has '{r_sha}', expected '{expected_sha}'."
+        )
 
-        devices = report.get("devices", [])
-        if isinstance(devices, (str, bytes)):
-            device_candidates: list[Any] = [devices]
-        elif isinstance(devices, (list, tuple)):
-            device_candidates = list(devices)
-        elif devices:
-            device_candidates = [devices]
-        else:
-            device_candidates = []
-        # Colab single-T4 reports carry `gpu` (no `devices` key); legacy
-        # smoke reports carry `gpu_name`. All hardware identity fields must
-        # be scanned so a forged PASS with mock hardware cannot chain.
-        for _hw_key in ("gpu", "gpu_name", "device_names"):
-            _hw_val = report.get(_hw_key, "")
-            if isinstance(_hw_val, (list, tuple)):
-                device_candidates.extend(_hw_val)
-            elif _hw_val:
-                device_candidates.append(_hw_val)
-        if any("mock" in str(d).lower() for d in device_candidates if d is not None and str(d)):
-            raise GateChainValidationError(f"{name} gate report contains mock hardware devices: {device_candidates}")
+    r_data = report.get("dataset_manifest_sha256")
+    if not r_data or r_data != expected_dataset_hash:
+        raise GateChainValidationError(
+            f"{name} Dataset hash mismatch! Report has '{r_data}', expected '{expected_dataset_hash}'."
+        )
 
-        r_sha = report.get("git_sha")
-        if not r_sha or r_sha.lower() != expected_sha.lower():
-            raise GateChainValidationError(
-                f"{name} Git SHA mismatch! Report has '{r_sha}', expected '{expected_sha}'."
-            )
-
-        r_data = report.get("dataset_manifest_sha256")
-        if not r_data or r_data != expected_dataset_hash:
-            raise GateChainValidationError(
-                f"{name} Dataset hash mismatch! Report has '{r_data}', expected '{expected_dataset_hash}'."
-            )
-
-        r_cfg = report.get("algorithm_config_sha256")
-        if not r_cfg or r_cfg != expected_config_hash:
-            raise GateChainValidationError(
-                f"{name} Algorithm config hash mismatch! Report has '{r_cfg}', expected '{expected_config_hash}'."
-            )
-
-    k_hash = compute_canonical_json_hash(kaggle_report)
-    c_hash = compute_canonical_json_hash(colab_t4_report) if colab_t4_report is not None else "SKIPPED_BY_OPERATOR"
+    r_cfg = report.get("algorithm_config_sha256")
+    if not r_cfg or r_cfg != expected_config_hash:
+        raise GateChainValidationError(
+            f"{name} Algorithm config hash mismatch! Report has '{r_cfg}', expected '{expected_config_hash}'."
+        )
 
     return GateChainResult(
         is_valid=True,
-        kaggle_report_sha256=k_hash,
-        colab_t4_report_sha256=c_hash,
+        kaggle_report_sha256=compute_canonical_json_hash(kaggle_report),
     )

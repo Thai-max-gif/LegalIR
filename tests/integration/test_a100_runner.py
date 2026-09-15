@@ -17,7 +17,7 @@ from src.release.fingerprints import generate_dataset_manifest, fingerprint_stru
 
 @pytest.fixture
 def a100_test_fixtures(tmp_path: Path) -> dict[str, Path]:
-    """Create minimal canonical data, Kaggle report, and Colab T4 report fixtures."""
+    """Create minimal canonical data and Kaggle T4x2 report fixture."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -69,20 +69,9 @@ def a100_test_fixtures(tmp_path: Path) -> dict[str, Path]:
     k_report_path = tmp_path / "kaggle_t4x2_report.json"
     k_report_path.write_text(json.dumps(k_report, indent=2), encoding="utf-8")
 
-    c_report = {
-        "stage": "COLAB_SINGLE_T4",
-        "verdict": "PASS",
-        "git_sha": valid_sha,
-        "dataset_manifest_sha256": manifest["manifest_sha256"],
-        "algorithm_config_sha256": algo_hash,
-    }
-    c_report_path = tmp_path / "colab_t4_report.json"
-    c_report_path.write_text(json.dumps(c_report, indent=2), encoding="utf-8")
-
     return {
         "dataset_dir": data_dir,
         "kaggle_report_path": k_report_path,
-        "colab_t4_report_path": c_report_path,
         "valid_sha": valid_sha,
     }
 
@@ -97,23 +86,6 @@ def test_a100_runner_fails_without_kaggle_report(a100_test_fixtures, tmp_path: P
             dataset_dir=a100_test_fixtures["dataset_dir"],
             output_dir=out_dir,
             kaggle_report_path=missing_k,
-            colab_t4_report_path=a100_test_fixtures["colab_t4_report_path"],
-            expected_sha=a100_test_fixtures["valid_sha"],
-            mock=True,
-        )
-
-
-def test_a100_runner_fails_without_colab_t4_report(a100_test_fixtures, tmp_path: Path):
-    """A100 runner fails closed if Colab T4 report is missing."""
-    out_dir = tmp_path / "a100_out"
-    missing_c = tmp_path / "missing_colab_t4.json"
-
-    with pytest.raises(RuntimeError, match="Colab T4 report missing"):
-        run_a100_production_gate(
-            dataset_dir=a100_test_fixtures["dataset_dir"],
-            output_dir=out_dir,
-            kaggle_report_path=a100_test_fixtures["kaggle_report_path"],
-            colab_t4_report_path=missing_c,
             expected_sha=a100_test_fixtures["valid_sha"],
             mock=True,
         )
@@ -126,7 +98,6 @@ def test_a100_runner_mock_produces_manifest_and_submission(a100_test_fixtures, t
         dataset_dir=a100_test_fixtures["dataset_dir"],
         output_dir=out_dir,
         kaggle_report_path=a100_test_fixtures["kaggle_report_path"],
-        colab_t4_report_path=a100_test_fixtures["colab_t4_report_path"],
         expected_sha=a100_test_fixtures["valid_sha"],
         mock=True,
     )

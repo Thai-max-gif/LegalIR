@@ -24,7 +24,6 @@ def run_colab_production_training(
     dataset_dir: Path | str,
     output_dir: Path | str,
     smoke_report_path: Path | None = None,
-    colab_t4_report_path: Path | None = None,
     expected_sha: str = "",
     precision: str = "bf16",
     allow_non_a100: bool = False,
@@ -35,7 +34,6 @@ def run_colab_production_training(
     freeze_file_path: Path | str | None = None,
     algorithm_config_path: Path | str | None = None,
     runtime_profile_path: Path | str | None = None,
-    skip_colab_t4: bool = False,
     hf_allow_public_repo: bool = False,
 ) -> dict:
     """Execute Colab run delegating to the appropriate authoritative gate."""
@@ -63,22 +61,11 @@ def run_colab_production_training(
         ]
         k_rep = Path(smoke_report_path) if smoke_report_path else next((p for p in k_cands if p and p.is_file()), k_cands[-1])
 
-        c_cands = [
-            Path(colab_t4_report_path) if colab_t4_report_path else None,
-            Path("/content/colab_t4_report.json"),
-            Path("/content/LegalIR/artifacts/task1/gates/colab_t4_report.json"),
-            REPO_ROOT / "artifacts" / "task1" / "gates" / "colab_t4_report.json",
-        ]
-        c_rep = Path(colab_t4_report_path) if colab_t4_report_path else next((p for p in c_cands if p and p.is_file()), c_cands[-1])
-
         if mock:
             output_dir.mkdir(parents=True, exist_ok=True)
             if not Path(k_rep).is_file():
                 k_rep = output_dir / "kaggle_t4x2_report.json"
                 k_rep.write_text(json.dumps({"stage": "KAGGLE_T4X2", "verdict": "PASS", "git_sha": "718efb7ba4565fa5b863f05927122484f8e58c2f"}), encoding="utf-8")
-            if not Path(c_rep).is_file():
-                c_rep = output_dir / "colab_t4_report.json"
-                c_rep.write_text(json.dumps({"stage": "COLAB_SINGLE_T4", "verdict": "PASS", "git_sha": "718efb7ba4565fa5b863f05927122484f8e58c2f"}), encoding="utf-8")
         # Normalize precision: accept bfloat16/bf16, default bf16 for A100
         prec_norm = str(precision or "bf16").lower().strip()
         if prec_norm in ("bfloat16", "bf16"):
@@ -91,14 +78,12 @@ def run_colab_production_training(
                 algorithm_config_path=algorithm_config_path or (REPO_ROOT / "configs" / "algorithm" / "legalir_v2.yaml"),
                 runtime_profile_path=runtime_profile_path or (REPO_ROOT / "configs" / "runtime" / "colab_a100.yaml"),
                 kaggle_report_path=k_rep,
-                colab_t4_report_path=c_rep,
                 freeze_file_path=freeze_file_path or (REPO_ROOT / "artifacts" / "task1" / "freeze" / "production_freeze.json"),
                 allow_non_a100=allow_non_a100,
                 mock=mock,
                 hf_repo=hf_repo,
                 hf_token=hf_token,
                 precision=prec_norm,
-                skip_colab_t4=skip_colab_t4,
                 hf_allow_public_repo=hf_allow_public_repo,
             )
         finally:
@@ -115,7 +100,6 @@ def main() -> int:
     parser.add_argument("--dataset-dir", type=str, default="/content/kaggle_dataset")
     parser.add_argument("--output-dir", type=str, default="artifacts/task1/production")
     parser.add_argument("--smoke-report", type=str, default=None)
-    parser.add_argument("--colab-t4-report", type=str, default=None)
     parser.add_argument("--expected-sha", type=str, default="")
     parser.add_argument("--precision", type=str, default="bf16")
     parser.add_argument("--allow-non-a100", action="store_true")
@@ -123,7 +107,6 @@ def main() -> int:
     parser.add_argument("--hf-repo", type=str, default="dangphuc2109/legalir-task1-reranker")
     parser.add_argument("--freeze-file", type=str, default=None)
     parser.add_argument("--mode", type=str, default="full", choices=["full", "smoke"])
-    parser.add_argument("--skip-colab-t4", action="store_true", help="Operator override: skip Colab single-T4 upstream report")
     parser.add_argument("--hf-allow-public-repo", action="store_true", help="Operator override: allow push to existing PUBLIC HF repo")
     args = parser.parse_args()
 
@@ -132,7 +115,6 @@ def main() -> int:
             dataset_dir=args.dataset_dir,
             output_dir=args.output_dir,
             smoke_report_path=Path(args.smoke_report) if args.smoke_report else None,
-            colab_t4_report_path=Path(args.colab_t4_report) if args.colab_t4_report else None,
             expected_sha=args.expected_sha,
             precision=args.precision,
             allow_non_a100=args.allow_non_a100,
@@ -140,7 +122,6 @@ def main() -> int:
             hf_repo=args.hf_repo,
             freeze_file_path=Path(args.freeze_file) if args.freeze_file else None,
             run_mode=args.mode,
-            skip_colab_t4=args.skip_colab_t4,
             hf_allow_public_repo=args.hf_allow_public_repo,
         )
         return 0

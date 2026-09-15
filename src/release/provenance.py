@@ -371,7 +371,8 @@ def check_notebook_pins(repo_root: Union[Path, str], expected_runtime_sha: str) 
         root / "kaggle_kernel" / "legalir_training.ipynb",
         root / "kaggle_kernel" / "legalqa_gpu_pipeline.ipynb",
         root / "notebooks" / "kaggle_final.ipynb",
-        root / "notebooks" / "colab_t4_smoke.ipynb",
+        root / "notebooks" / "kaggle_t4x2_smoke.ipynb",
+        root / "notebooks" / "colab_a100_train.ipynb",
         root / "colab" / "legalir_t4_smoke.ipynb",
     ]
 

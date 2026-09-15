@@ -2,8 +2,10 @@
 """
 Unified Generator for LegalIR Competition Notebooks:
 1. notebooks/kaggle_t4x2_smoke.ipynb (Kaggle 2xT4 CUDA Smoke Gate B1.1)
-2. notebooks/colab_t4_smoke.ipynb (Colab Single-T4 Contract Smoke Gate)
-3. notebooks/colab_a100_train.ipynb (Colab A100 Production Training B1.2)
+2. notebooks/colab_a100_train.ipynb (Colab A100 Production Training B1.2)
+
+Kaggle T4x2 is the sole pre-A100 hardware gate. The retired Colab single-T4
+notebook is no longer generated.
 
 Supports --check-drift to verify committed notebooks match generator output.
 """
@@ -282,234 +284,6 @@ def build_kaggle_smoke_notebook(commit_sha: str) -> dict:
     return create_jupyter_notebook(cells)
 
 
-def build_colab_t4_smoke_notebook(commit_sha: str) -> dict:
-    """Build the Colab Single-T4 Contract Smoke Gate launcher notebook."""
-    cells = []
-
-    cell_0 = {
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": [
-            "# LegalIR Task 1: Colab Single-T4 Contract Smoke Gate\n",
-            "## UIT Data Science Challenge 2026 — Single-GPU Topology Verification\n",
-            f"**Pinned Git Commit:** `{commit_sha}`\n",
-            "\n",
-            "### Gate Purpose:\n",
-            "- **Validates Single-GPU Topology (`cuda:0` / `cuda:0`)** matching production A100.\n",
-            "- Verifies upstream Kaggle Dual-T4 report verdict is `PASS`.\n",
-            "- Exercises sequential memory release between Dense and Reranker.\n",
-            "- Emits `colab_t4_report.json` with verdict `PASS`.\n",
-        ],
-    }
-    cells.append(cell_0)
-
-    cell_1 = {
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            "# ==============================================================================\n",
-            "# Cell 1: Hardware Preflight & Environment Loader\n",
-            "# ==============================================================================\n",
-            "import json\n",
-            "import os\n",
-            "import sys\n",
-            "import torch\n",
-            "from pathlib import Path\n",
-            "\n",
-            "print(f\"[+] Python Version : {sys.version.split()[0]}\")\n",
-            "print(f\"[+] PyTorch Version: {torch.__version__}\")\n",
-            "assert torch.cuda.is_available(), \"CUDA GPU required for Colab T4 gate.\"\n",
-            "gpu_name = torch.cuda.get_device_name(0)\n",
-            "vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)\n",
-            "print(f\"[+] Detected GPU: {gpu_name} ({vram_gb:.2f} GB VRAM)\")\n",
-            "assert \"T4\" in gpu_name, f\"Colab T4 gate requires Tesla T4 GPU (found {gpu_name}).\"\n",
-            "\n",
-            "try:\n",
-            "    from google.colab import userdata\n",
-            "    _ud = userdata.get\n",
-            "except Exception:\n",
-            "    _ud = None\n",
-            "if _ud is not None:\n",
-            "    for _k in [\"HF_TOKEN\", \"HF_TOKEN_WRITE\", \"HF_TOKEN_READ\", \"KAGGLE_API_TOKEN\", \"KAGGLE_KEY\", \"HF_REPO_ID\"]:\n",
-            "        try:\n",
-            "            _v = _ud(_k)\n",
-            "        except Exception:\n",
-            "            _v = None\n",
-            "        if _v and _k not in os.environ:\n",
-            "            os.environ[_k] = str(_v)\n",
-            "\n",
-            "for env_path in [Path(\"/content/.env\"), Path(\"/content/LegalIR/.env\"), Path(\".env\")]:\n",
-            "    if env_path.is_file():\n",
-            "        for line in env_path.read_text(encoding=\"utf-8\").splitlines():\n",
-            "            line = line.strip()\n",
-            "            if line and not line.startswith(\"#\") and \"=\" in line:\n",
-            "                k, v = line.split(\"=\", 1)\n",
-            "                os.environ.setdefault(k.strip(), v.strip().strip(\"'\\\"\"))\n",
-            "\n",
-            "# Normalize HF Token (accept HF_TOKEN, HF_TOKEN_WRITE, HF_TOKEN_READ; ignore non-HF tokens like KGAT_)\n",
-            "hf_candidates = [os.environ.get(\"HF_TOKEN_WRITE\"), os.environ.get(\"HF_TOKEN\"), os.environ.get(\"HF_TOKEN_READ\")]\n",
-            "hf_tok = next((t for t in hf_candidates if t and str(t).startswith(\"hf_\")), None)\n",
-            "if hf_tok:\n",
-            "    os.environ[\"HF_TOKEN\"] = hf_tok\n",
-            "    try:\n",
-            "        from huggingface_hub import HfApi\n",
-            "        u_name = HfApi(token=hf_tok).whoami().get(\"name\", \"unknown\")\n",
-            "        print(f\"[+] HF_TOKEN verified (authenticated as @{u_name} for model downloads).\")\n",
-            "    except Exception:\n",
-            "        print(\"[+] HF_TOKEN active in environment for model downloads.\")\n",
-            "\n",
-            "# Normalize Kaggle credentials for dataset acquisition\n",
-            "kg_tok = os.environ.get(\"KAGGLE_API_TOKEN\") or os.environ.get(\"KAGGLE_KEY\")\n",
-            "if kg_tok and str(kg_tok).startswith(\"KGAT_\"):\n",
-            "    os.environ[\"KAGGLE_API_TOKEN\"] = kg_tok\n",
-            "    os.environ[\"KAGGLE_KEY\"] = kg_tok\n",
-            "    kg_cfg = Path.home() / \".kaggle\" / \"kaggle.json\"\n",
-            "    kg_cfg.parent.mkdir(parents=True, exist_ok=True)\n",
-            "    kg_user = os.environ.get(\"KAGGLE_USERNAME\", \"phucdangg\")\n",
-            "    kg_cfg.write_text(json.dumps({\"username\": kg_user, \"key\": kg_tok}))\n",
-            "    kg_cfg.chmod(0o600)\n",
-            "    print(\"[+] Kaggle CLI configured from local credentials.\")\n",
-        ],
-    }
-    cells.append(cell_1)
-
-    cell_2 = {
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            "# ==============================================================================\n",
-            "# Cell 2: Repository Clone & Detached HEAD Checkout\n",
-            "# ==============================================================================\n",
-            "import subprocess\n",
-            "from pathlib import Path\n",
-            "\n",
-            f"EXPECTED_COMMIT = os.environ.get(\"LEGALIR_COMMIT_SHA\") or \"{commit_sha}\"\n",
-            "REPO_DIR = Path(\"/content/LegalIR\") if Path(\"/content\").exists() else Path.cwd()\n",
-            "\n",
-            "if not REPO_DIR.exists():\n",
-            "    subprocess.run([\"git\", \"clone\", \"https://github.com/silent9669/LegalIR.git\", str(REPO_DIR)], check=True)\n",
-            "\n",
-            "if (REPO_DIR / \".git\").is_dir():\n",
-            "    subprocess.run([\"git\", \"fetch\", \"origin\", EXPECTED_COMMIT], cwd=REPO_DIR, check=False)\n",
-            "    print(f\"[*] Checking out exact commit: {EXPECTED_COMMIT} (detached HEAD)...\")\n",
-            "    res = subprocess.run([\"git\", \"checkout\", \"--detach\", EXPECTED_COMMIT], cwd=REPO_DIR, capture_output=True, text=True)\n",
-            "    if res.returncode != 0:\n",
-            "        print(f\"[*] Checkout fallback: unshallowing repository...\")\n",
-            "        subprocess.run([\"git\", \"fetch\", \"--unshallow\", \"origin\"], cwd=REPO_DIR, check=False)\n",
-            "        subprocess.run([\"git\", \"checkout\", \"--detach\", EXPECTED_COMMIT], cwd=REPO_DIR, check=True)\n",
-            "\n",
-            "if str(REPO_DIR) not in sys.path:\n",
-            "    sys.path.insert(0, str(REPO_DIR))\n",
-            "print(f\"[+] Working in: {REPO_DIR}\")\n",
-        ],
-    }
-    cells.append(cell_2)
-
-    cell_3 = {
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            "# ==============================================================================\n",
-            "# Cell 3: Dependencies & Dataset Setup\n",
-            "# Do NOT reinstall torch (Colab CUDA build). Install only missing wheels.\n",
-            "# ==============================================================================\n",
-            "import subprocess\n",
-            "import sys\n",
-            "from pathlib import Path\n",
-            "\n",
-            "subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", \"-q\", \"peft\", \"pyvi\", \"pyarrow\", \"huggingface_hub\", \"bm25s\", \"faiss-cpu\", \"lightgbm\", \"scikit-learn\"], check=True)\n",
-            "subprocess.run([sys.executable, \"-m\", \"pip\", \"uninstall\", \"-y\", \"-q\", \"torchao\"], check=False)\n",
-            "sys.modules[\"torchao\"] = None\n",
-            "try:\n",
-            "    import peft.import_utils\n",
-            "    peft.import_utils.is_torchao_available = lambda: False\n",
-            "except Exception:\n",
-            "    pass\n",
-            "\n",
-            "dataset_dir = Path(\"/content/kaggle_dataset\") if Path(\"/content\").exists() else REPO_DIR / \"artifacts/shared/canonical/v2\"\n",
-            "required_files = [\"documents.parquet\", \"chunks.parquet\", \"queries_train.parquet\", \"qrels_train.parquet\", \"public-official.json\"]\n",
-            "if not all((dataset_dir / _f).is_file() for _f in required_files):\n",
-            "    dataset_dir.mkdir(parents=True, exist_ok=True)\n",
-            "    subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", \"-q\", \"kaggle\"], check=True)\n",
-            "    subprocess.run([\"kaggle\", \"datasets\", \"download\", \"-d\", \"phucdangg/legalir-task1-clean-data\", \"-p\", str(dataset_dir), \"--unzip\", \"--force\"], check=True)\n",
-            "    missing = [_f for _f in required_files if not (dataset_dir / _f).is_file()]\n",
-            "    assert not missing, f\"Dataset incomplete after download, missing: {missing}\"\n",
-            "print(f\"[+] Dataset verified at: {dataset_dir}\")\n",
-        ],
-    }
-    cells.append(cell_3)
-
-    cell_4 = {
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            "# ==============================================================================\n",
-            "# Cell 4: Execute Colab Single-T4 Gate (scripts/gates/run_colab_t4.py)\n",
-            "# ==============================================================================\n",
-            "from pathlib import Path\n",
-            "from scripts.gates.run_colab_t4 import run_colab_t4_gate\n",
-            "\n",
-            "output_dir = Path(\"/content/artifacts/task1/gates\") if Path(\"/content\").exists() else REPO_DIR / \"artifacts/task1/gates\"\n",
-            "output_dir.mkdir(parents=True, exist_ok=True)\n",
-            "k_cands = [\n",
-            "    Path(\"/content/kaggle_t4x2_report.json\"),\n",
-            "    REPO_DIR / \"artifacts/task1/gates/kaggle_t4x2_report.json\",\n",
-            "    Path(\"/content/artifacts/task1/gates/kaggle_t4x2_report.json\"),\n",
-            "]\n",
-            "k_report_path = next((p for p in k_cands if p.is_file()), k_cands[0])\n",
-            "\n",
-            "report = run_colab_t4_gate(\n",
-            "    dataset_dir=dataset_dir,\n",
-            "    output_dir=output_dir,\n",
-            "    expected_sha=EXPECTED_COMMIT,\n",
-            "    kaggle_report_path=k_report_path,\n",
-            "    mock=False,\n",
-            ")\n",
-            "print(f\"[+] Colab Single-T4 Gate execution verdict: {report.get('verdict')}\")\n",
-        ],
-    }
-    cells.append(cell_4)
-
-    cell_5 = {
-        "cell_type": "code",
-        "execution_count": None,
-        "metadata": {},
-        "outputs": [],
-        "source": [
-            "# ==============================================================================\n",
-            "# Cell 5: Assert Gate PASS\n",
-            "# ==============================================================================\n",
-            "import json\n",
-            "import shutil\n",
-            "from pathlib import Path\n",
-            "\n",
-            "report_path = output_dir / \"colab_t4_report.json\"\n",
-            "assert report_path.is_file(), f\"Report missing: {report_path}\"\n",
-            "report = json.loads(report_path.read_text(encoding='utf-8'))\n",
-            "print(json.dumps(report, indent=2))\n",
-            "assert report.get(\"verdict\") == \"PASS\", f\"Colab T4 Gate failed: {report}\"\n",
-            "try:\n",
-            "    shutil.copyfile(report_path, Path(\"/content/colab_t4_report.json\"))\n",
-            "except Exception:\n",
-            "    pass\n",
-            "print(\"\\n=================================================================\")\n",
-            "print(\"[+] COLAB SINGLE-T4 GATE PASSED. READY FOR PRODUCTION A100 RUN.\")\n",
-            "print(\"=================================================================\")\n",
-        ],
-    }
-    cells.append(cell_5)
-
-    return create_jupyter_notebook(cells)
-
-
 def build_colab_train_notebook(commit_sha: str) -> dict:
     """Build the clean Google Colab A100 Production Training launcher notebook (B1.2)."""
     cells = []
@@ -652,12 +426,13 @@ def build_colab_train_notebook(commit_sha: str) -> dict:
             "subprocess.run([sys.executable, \"-m\", \"pip\", \"install\", \"-q\", \"-c\", str(constraints), \"-r\", str(REPO_DIR / \"requirements-colab.txt\")], check=True)\n",
             "from scripts.colab.bootstrap import prepare_dataset, verify_launch\n",
             "k_report_p = next(p for p in [Path(\"/content/kaggle_t4x2_report.json\"), REPO_DIR / \"artifacts/task1/gates/kaggle_t4x2_report.json\"] if p.is_file())\n",
-            "c_report_p = next(p for p in [Path(\"/content/colab_t4_report.json\"), REPO_DIR / \"artifacts/task1/gates/colab_t4_report.json\"] if p.is_file())\n",
             "freeze_p = next(p for p in [Path(\"/content/production_freeze.json\"), REPO_DIR / \"artifacts/task1/freeze/production_freeze.json\"] if p.is_file())\n",
-            "verify_launch(EXPECTED_COMMIT, k_report_p, c_report_p, freeze_p)\n",
+            "verify_launch(EXPECTED_COMMIT, k_report_p, freeze_p)\n",
             "from scripts.gates.run_a100 import preflight_huggingface_access\n",
             "hf_repo = os.environ.get(\"HF_REPO_ID\", \"dangphuc2109/legalir-task1-reranker\")\n",
-            "hf_ok, hf_detail = preflight_huggingface_access(hf_repo)\n",
+            "hf_allow_public = os.environ.get(\"HF_ALLOW_PUBLIC_REPO\", \"1\") == \"1\"\n",
+            "print(\"[!] OPERATOR OVERRIDE: public HF repos permitted for this launch.\") if hf_allow_public else None\n",
+            "hf_ok, hf_detail = preflight_huggingface_access(hf_repo, allow_public_repo=hf_allow_public)\n",
             "if not hf_ok:\n",
             "    raise RuntimeError(hf_detail)\n",
             "print(f\"[+] {hf_detail}\")\n",
@@ -686,8 +461,6 @@ def build_colab_train_notebook(commit_sha: str) -> dict:
             "hf_repo = os.environ.get(\"HF_REPO_ID\", \"dangphuc2109/legalir-task1-reranker\")\n",
             "k_cands = [Path(\"/content/kaggle_t4x2_report.json\"), REPO_DIR / \"artifacts/task1/gates/kaggle_t4x2_report.json\"]\n",
             "k_report_p = next((p for p in k_cands if p.is_file()), None)\n",
-            "c_cands = [Path(\"/content/colab_t4_report.json\"), REPO_DIR / \"artifacts/task1/gates/colab_t4_report.json\"]\n",
-            "c_report_p = next((p for p in c_cands if p.is_file()), None)\n",
             "freeze_cands = [Path(\"/content/production_freeze.json\"), REPO_DIR / \"artifacts/task1/freeze/production_freeze.json\"]\n",
             "freeze_p = next((p for p in freeze_cands if p.is_file()), None)\n",
             "\n",
@@ -695,7 +468,6 @@ def build_colab_train_notebook(commit_sha: str) -> dict:
             "    dataset_dir=dataset_dir,\n",
             "    output_dir=output_dir,\n",
             "    smoke_report_path=k_report_p,\n",
-            "    colab_t4_report_path=c_report_p,\n",
             "    expected_sha=EXPECTED_COMMIT,\n",
             "    precision=\"bf16\",\n",
             "    allow_non_a100=False,\n",
@@ -703,6 +475,7 @@ def build_colab_train_notebook(commit_sha: str) -> dict:
             "    hf_repo=hf_repo,\n",
             "    freeze_file_path=freeze_p,\n",
             "    run_mode=\"full\",\n",
+            "    hf_allow_public_repo=hf_allow_public,\n",
             ")\n",
             "print(f\"[+] A100 Production Gate execution status: {report.get('status')} | Verdict: {report.get('verdict')}\")\n",
         ],
@@ -753,7 +526,6 @@ def main() -> int:
 
     targets = {
         notebooks_dir / "kaggle_t4x2_smoke.ipynb": build_kaggle_smoke_notebook(commit_sha),
-        notebooks_dir / "colab_t4_smoke.ipynb": build_colab_t4_smoke_notebook(commit_sha),
         notebooks_dir / "colab_a100_train.ipynb": build_colab_train_notebook(commit_sha),
     }
 

@@ -58,9 +58,10 @@ TIMEOUT_SECONDS = 18000
         modal.Secret.from_name("huggingface-secret")
     ]
 )
-def run_production_training(expected_sha: str, skip_colab_t4: bool = True, hf_allow_public_repo: bool = True):
+def run_production_training(expected_sha: str, hf_allow_public_repo: bool = True):
     """
     Executes the A100 production training pipeline within a Modal container.
+    Pre-A100 hardware gate: Kaggle dual-T4 report (B1.1), strictly enforced.
     """
     import sys
     
@@ -87,15 +88,10 @@ def run_production_training(expected_sha: str, skip_colab_t4: bool = True, hf_al
     
     # We must point to the verified artifact paths in the repo
     kaggle_report = repo_dir / "artifacts/task1/gates/kaggle_t4x2_report.json"
-    colab_report = repo_dir / "artifacts/task1/gates/colab_t4_report.json"
     freeze_file = repo_dir / "artifacts/task1/freeze/production_freeze.json"
-    
-    print("[*] Verifying production launch constraints...")
-    if skip_colab_t4:
-        print("[!] OPERATOR OVERRIDE: Colab single-T4 gate (B1.15) skipped by request.", flush=True)
-        print("[!] Kaggle dual-T4 gate remains strictly enforced.", flush=True)
-    verify_launch(expected_sha, kaggle_report, colab_report if not skip_colab_t4 else None, freeze_file,
-                  require_colab_t4=not skip_colab_t4)
+
+    print("[*] Verifying production launch constraints (Kaggle T4x2 gate)...")
+    verify_launch(expected_sha, kaggle_report, freeze_file)
     
     dataset_dir = Path("/root/kaggle_dataset")
     print(f"[*] Downloading and verifying canonical dataset at {dataset_dir}...")
@@ -127,7 +123,6 @@ def run_production_training(expected_sha: str, skip_colab_t4: bool = True, hf_al
             dataset_dir=dataset_dir,
             output_dir=output_dir,
             smoke_report_path=kaggle_report,
-            colab_t4_report_path=None if skip_colab_t4 else colab_report,
             expected_sha=expected_sha,
             precision="bf16",
             allow_non_a100=False,
@@ -135,7 +130,6 @@ def run_production_training(expected_sha: str, skip_colab_t4: bool = True, hf_al
             hf_repo=hf_repo,
             freeze_file_path=freeze_file,
             run_mode="full",
-            skip_colab_t4=skip_colab_t4,
             hf_allow_public_repo=hf_allow_public_repo,
         )
     finally:

@@ -58,10 +58,11 @@ This executes:
    - Asserts finite loss, weight update delta $\Delta w > 0$, and adapter checkpoint save/reload.
    - Generates `kaggle_t4x2_report.json` with verdict `"PASS"`.
 
-### Stage 2b: Colab Single-T4 Contract Gate (B1.15)
-1. **Run via CLI (recommended)**: `./scripts/colab/run_colab_cli.sh T4`.
-2. **Or manual**: open `notebooks/colab_t4_smoke.ipynb` on Colab with a T4 runtime.
-3. Verifies upstream Kaggle PASS report, exercises single-GPU (`cuda:0`/`cuda:0`) topology with real models, emits `colab_t4_report.json` (`PASS`).
+### Stage 2b: Colab Single-T4 Contract Gate (B1.15) — RETIRED
+Retired. Kaggle T4x2 (Stage 2a) is the sole pre-A100 hardware gate. The
+`colab_t4_smoke.ipynb` notebook is no longer generated and the A100 chain does
+not consume `colab_t4_report.json`. (The `run_colab_t4.py` gate script remains
+for manual use only.)
 
 ---
 

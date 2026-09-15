@@ -16,7 +16,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 CANONICAL_NOTEBOOKS: list[str] = [
     "notebooks/kaggle_t4x2_smoke.ipynb",
-    "notebooks/colab_t4_smoke.ipynb",
     "notebooks/colab_a100_train.ipynb",
 ]
 
