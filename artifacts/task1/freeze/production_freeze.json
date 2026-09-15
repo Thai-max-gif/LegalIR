@@ -19,17 +19,13 @@
     "slug": "phucdangg/legalir-task1-clean-data"
   },
   "gates": {
-    "colab_t4": {
-      "report_sha256": "SKIPPED_BY_OPERATOR",
-      "verdict": "SKIPPED_BY_OPERATOR"
-    },
     "kaggle_t4x2": {
-      "report_sha256": "61cd9b31c95e5eeec86b638bef502f0d4d9121118ef475f781d2628510fc15a0",
+      "report_sha256": "51459c03d9c573f702abf1099cae87d19c206a77ab07f51690e580006a16adc6",
       "verdict": "PASS"
     }
   },
-  "git_sha": "ece54f8297d79d1d5b1f8cb7ced587bf054b362c",
-  "run_id": "task1-20260915-ece54f8",
+  "git_sha": "3827c57eb6f3ee9c581fe11d8123eaef409fc391",
+  "run_id": "task1-20260915-3827c57",
   "runtime_profile": "colab_a100",
   "schema_version": 3
 }
