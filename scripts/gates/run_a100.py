@@ -72,6 +72,14 @@ def preflight_huggingface_access(
         user = api.whoami().get("name", "unknown")
         api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
         api.auth_check(repo_id=repo_id, repo_type="model", write=True)
+        # Enforce private visibility: exist_ok=True does not flip a public repo
+        # back to private, so an accidentally-public release repo must fail fast.
+        try:
+            info = api.repo_info(repo_id=repo_id, repo_type="model")
+            if getattr(info, "private", None) is False:
+                return False, f"HF repo {repo_id} exists but is PUBLIC; release requires a private repo."
+        except Exception:
+            pass
         return True, f"authenticated as @{user}; verified write access to {repo_id}"
     except Exception as exc:
         # Hub exceptions can contain request details; never log their raw text.
@@ -105,6 +113,14 @@ def upload_artifacts_to_huggingface(
         from huggingface_hub import HfApi
         api = HfApi(token=token)
         api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
+        try:
+            _info = api.repo_info(repo_id=repo_id, repo_type="model")
+            if getattr(_info, "private", None) is False:
+                raise RuntimeError(f"HF repo {repo_id} is PUBLIC; release requires a private repo.")
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
         commit = api.upload_folder(
             repo_id=repo_id,
             repo_type="model",
@@ -166,6 +182,37 @@ def run_a100_production_gate(
         hw_profile = verify_device_contract(COLAB_A100_CONTRACT, allow_debug=allow_non_a100)
         gpu_name = hw_profile.device_names[0] if hw_profile.device_names else "NVIDIA A100"
         device_count = hw_profile.device_count
+        # Fail-closed VRAM guard: Colab A100 lottery is often 40GB; full
+        # 5-fold OOF + final LoRA needs headroom beyond a name match.
+        try:
+            import torch as _torch
+
+            _props = _torch.cuda.get_device_properties(0)
+            _total_gib = float(_props.total_memory) / (1024**3)
+            print(f"  • GPU VRAM          : {_props.name} {_total_gib:.1f} GiB", flush=True)
+            if _total_gib < 39.0:
+                raise RuntimeError(
+                    f"Insufficient A100 VRAM: {_total_gib:.1f} GiB detected, need >= 40 GiB for full production run."
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        # Fail-closed disk guard: dataset (735MB) + dense index (~675MB) +
+        # BM25 indexes + checkpoints + recovery.tar.gz need headroom.
+        try:
+            import shutil as _shutil
+
+            _free_gib = float(_shutil.disk_usage(str(output_dir)).free) / (1024**3)
+            print(f"  • Disk free         : {_free_gib:.1f} GiB at {output_dir}", flush=True)
+            if _free_gib < 20.0:
+                raise RuntimeError(
+                    f"Insufficient free disk: {_free_gib:.1f} GiB at {output_dir}, need >= 20 GiB."
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
     else:
         gpu_name = "Mock NVIDIA A100"
         device_count = 1
@@ -184,15 +231,12 @@ def run_a100_production_gate(
     algo_sha256 = fingerprint_structured_config(algorithm_config_path)
     runtime_sha256 = fingerprint_structured_config(runtime_profile_path)
 
-    # Export resolved configuration
-    try:
-        from src.release.fingerprints import validate_runtime_overrides
-        algo_cfg = yaml.safe_load(Path(algorithm_config_path).read_text(encoding="utf-8"))
-        runtime_cfg = yaml.safe_load(Path(runtime_profile_path).read_text(encoding="utf-8"))
-        resolved_cfg = validate_runtime_overrides(algo_cfg, runtime_cfg)
-        (output_dir / "resolved_config.yaml").write_text(yaml.safe_dump(resolved_cfg, sort_keys=True), encoding="utf-8")
-    except Exception:
-        pass
+    # Export resolved configuration (fail-closed on protected-key violations)
+    from src.release.fingerprints import validate_runtime_overrides
+    algo_cfg = yaml.safe_load(Path(algorithm_config_path).read_text(encoding="utf-8"))
+    runtime_cfg = yaml.safe_load(Path(runtime_profile_path).read_text(encoding="utf-8"))
+    resolved_cfg = validate_runtime_overrides(algo_cfg, runtime_cfg)
+    (output_dir / "resolved_config.yaml").write_text(yaml.safe_dump(resolved_cfg, sort_keys=True), encoding="utf-8")
 
     # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 & Colab Single-T4)
     if kaggle_report_path:
@@ -268,19 +312,16 @@ def run_a100_production_gate(
     ]
     freeze_path = next((p for p in freeze_cands if p and p.is_file()), Path(freeze_file_path))
     if freeze_path.is_file():
-        try:
-            freeze_data = json.loads(freeze_path.read_text(encoding="utf-8"))
-            if not mock:
-                if freeze_data.get("git_sha", "").lower() != actual_sha.lower():
-                    raise RuntimeError(f"Production freeze git_sha mismatch: {freeze_data.get('git_sha')} vs {actual_sha}")
-                if freeze_data.get("dataset", {}).get("manifest_sha256") != manifest_sha256:
-                    raise RuntimeError(f"Production freeze dataset hash mismatch!")
-                if freeze_data.get("algorithm_config_sha256") != algo_sha256:
-                    raise RuntimeError(f"Production freeze algorithm config hash mismatch!")
-            shutil.copyfile(freeze_path, output_dir / "production_freeze.json")
-            print(f"[+] Verified and attached production freeze tuple: {freeze_path.name}")
-        except Exception as freeze_exc:
-            print(f"[!] Warning on production freeze check: {freeze_exc}")
+        freeze_data = json.loads(freeze_path.read_text(encoding="utf-8"))
+        if not mock:
+            if freeze_data.get("git_sha", "").lower() != actual_sha.lower():
+                raise RuntimeError(f"Production freeze git_sha mismatch: {freeze_data.get('git_sha')} vs {actual_sha}")
+            if freeze_data.get("dataset", {}).get("manifest_sha256") != manifest_sha256:
+                raise RuntimeError("Production freeze dataset hash mismatch!")
+            if freeze_data.get("algorithm_config_sha256") != algo_sha256:
+                raise RuntimeError("Production freeze algorithm config hash mismatch!")
+        shutil.copyfile(freeze_path, output_dir / "production_freeze.json")
+        print(f"[+] Verified and attached production freeze tuple: {freeze_path.name}")
 
     # Capture system and hardware environment
     try:
@@ -312,10 +353,11 @@ def run_a100_production_gate(
     if mock:
         print("[*] Executing mock A100 production training and artifact generation...", flush=True)
         adapter_dir.mkdir(parents=True, exist_ok=True)
-        (adapter_dir / "adapter_config.json").write_text(json.dumps({"r": 16, "base_model": "BAAI/bge-reranker-v2-m3"}), encoding="utf-8")
+        (adapter_dir / "adapter_config.json").write_text(json.dumps({"r": 8, "base_model": "BAAI/bge-reranker-v2-m3"}), encoding="utf-8")
         (adapter_dir / "adapter_model.safetensors").write_bytes(b"MOCK_A100_ADAPTER_WEIGHTS")
 
-        sub_dict = {f"q_{i}": [f"10{j}" for j in range(1, 4)] for i in range(1000)}
+        # Canonical scorer-compatible format: {qid: {"answer": [...]}}.
+        sub_dict = {f"q_{i}": {"answer": [f"10{j}" for j in range(1, 4)]} for i in range(1000)}
         sub_json_str = json.dumps(sub_dict, indent=2)
         with zipfile.ZipFile(submission_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("submission.json", sub_json_str)

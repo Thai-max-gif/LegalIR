@@ -118,6 +118,9 @@ for f in artifacts/task1/gates/kaggle_t4x2_report.json artifacts/task1/gates/col
 done
 
 if [ "$GPU_MODE" = "A100" ]; then
+    # NOTE: COLAB_TIMEOUT is in SECONDS (colab exec --timeout <float> seconds).
+    # Do NOT pass milliseconds. Default 40000s = 11.1h (exceeds typical Colab
+    # VM lifetime — expect preemption on long 5-fold OOF runs).
     TIMEOUT="${COLAB_TIMEOUT:-40000}"
 else
     TIMEOUT="${COLAB_TIMEOUT:-7200}"

@@ -240,7 +240,7 @@ class CrossEncoderReranker:
         self,
         pairs: list[tuple[str, str]],
         batch_size: int = 16,
-        max_length: int = 512,
+        max_length: int = 384,
     ) -> list[float]:
         """Score ``(query, passage)`` pairs using deterministic mini-batches."""
         if not pairs:
@@ -376,7 +376,7 @@ class CrossEncoderReranker:
         evidence_builder: EvidencePackBuilder | None = None,
         top_k: int = 50,
         batch_size: int = 16,
-        max_length: int = 512,
+        max_length: int = 384,
     ) -> list[CandidateRecord]:
         """Rerank the first ``top_k`` candidates by BGE cross-encoder score."""
         if not candidates or not query:
@@ -461,7 +461,7 @@ class CrossEncoderReranker:
         self,
         pairs: list[tuple[str, str]],
         batch_size: int | None = None,
-        max_length: int = 256,
+        max_length: int = 384,
     ) -> np.ndarray:
         """Score pairs and return a NumPy array of float32 scores."""
         if not pairs:

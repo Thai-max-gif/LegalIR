@@ -12,10 +12,11 @@ lora_r: 8
 lora_alpha: 16
 gradient_checkpointing: true
 learning_rate: 2.0e-5
-batch_size: 4
-gradient_accumulation_steps: 4
+batch_size: 8
+gradient_accumulation_steps: 2
 max_steps: 250
 warmup_ratio: 0.1
 max_length: 384
-fp16: true
+precision: "bf16"
+fp16: false
 device: "auto"

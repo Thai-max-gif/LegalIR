@@ -4,16 +4,16 @@ loss_type: "bce"
 use_lora: true
 
 lora:
-  r: 16
-  lora_alpha: 32
+  r: 8
+  lora_alpha: 16
   lora_dropout: 0.05
   target_modules: ["query", "value", "key", "dense"]
 
-lora_r: 16
-lora_alpha: 32
+lora_r: 8
+lora_alpha: 16
 lora_dropout: 0.05
 
 learning_rate: 2.0e-5
-max_length: 512
+max_length: 384
 warmup_ratio: 0.1
 gradient_checkpointing: true

@@ -111,6 +111,8 @@ def generate_document_disjoint_split(
         "val_query_ids": sorted(val_qids),
         "train_doc_count": len(train_docs),
         "val_doc_count": len(val_docs),
+        "train_doc_ids": sorted(train_docs),
+        "val_doc_ids": sorted(val_docs),
     }
 
 
@@ -171,7 +173,10 @@ def verify_fold_isolation(
             f"Fold validation sets do not partition full query set! Missing: {len(missing)}, Extra: {len(extra)}"
         )
 
-    # If qrels provided, verify qrel mapping isolation
+    # If qrels provided, verify query-level qrel isolation. NOTE: random
+    # 5-fold splits are query-disjoint by design but intentionally doc-leaky
+    # (same gold doc may appear in train+val). Doc-level robustness is
+    # covered by the separate document-disjoint split, not here.
     if qrels is not None:
         q2d = defaultdict(set)
         if isinstance(qrels, dict):
@@ -186,10 +191,18 @@ def verify_fold_isolation(
             val_ids = set(str(x) for x in f.get("val_query_ids", f.get("val", [])))
             train_ids = set(str(x) for x in f.get("train_query_ids", f.get("train", [])))
 
-            # Verify no validation qrels exist in training set
+            # Query-level isolation (duplicate of per-fold check above, kept
+            # explicit when qrels are supplied).
             leaked_qrels = val_ids & train_ids
             if leaked_qrels:
                 raise AssertionError(f"Fold {idx} leaked validation queries into train: {leaked_qrels}")
+
+            # Coverage: every val query should have at least one gold doc.
+            missing_gold = sorted(q for q in val_ids if not q2d.get(q))
+            if missing_gold:
+                raise AssertionError(
+                    f"Fold {idx} has {len(missing_gold)} val queries without gold qrels: {missing_gold[:5]}"
+                )
 
     return {
         "is_isolated": True,

@@ -138,7 +138,12 @@ def count_parameters_from_config(
                     with open(cfg_path, "r", encoding="utf-8") as f:
                         return estimate_transformer_parameters(json.load(f))
             if offline_fallback:
-                return KNOWN_PARAM_COUNTS.get(model_name_str, 0)
+                # Fail-closed: silent 0 would undercount the <4B budget.
+                # Unknown model names must be pinned in KNOWN_PARAM_COUNTS.
+                raise ValueError(
+                    f"Unknown model '{model_name_str}' has no pinned parameter count; "
+                    f"add it to KNOWN_PARAM_COUNTS to keep the <4B audit fail-closed."
+                )
             raise
     else:
         config = config_or_name

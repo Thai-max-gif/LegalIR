@@ -39,10 +39,14 @@ class DocDisjointSplit:
         q_overlap = self.train_qids.intersection(self.val_qids)
         if q_overlap:
             raise ValueError(f"Doc-disjoint split has {len(q_overlap)} overlapping query IDs")
-        if self.train_doc_ids and self.val_doc_ids:
-            d_overlap = self.train_doc_ids.intersection(self.val_doc_ids)
-            if d_overlap:
-                raise ValueError(f"Doc-disjoint split has {len(d_overlap)} overlapping document IDs")
+        if not self.train_doc_ids or not self.val_doc_ids:
+            raise ValueError(
+                "Doc-disjoint split is missing train_doc_ids/val_doc_ids; regenerate "
+                "doc_disjoint_split.json with src/evaluation/splits.py (fail-closed, no silent skip)."
+            )
+        d_overlap = self.train_doc_ids.intersection(self.val_doc_ids)
+        if d_overlap:
+            raise ValueError(f"Doc-disjoint split has {len(d_overlap)} overlapping document IDs")
 
 
 def load_5fold_splits(dataset_dir: Union[str, Path]) -> List[FoldSplit]:
@@ -95,6 +99,13 @@ def load_doc_disjoint_split(dataset_dir: Union[str, Path]) -> DocDisjointSplit:
     train_doc_ids = set(map(str, data.get("train_doc_ids", [])))
     val_doc_ids = set(map(str, data.get("val_doc_ids", [])))
 
+    if (not train_doc_ids or not val_doc_ids) and (train_qids and val_qids):
+        # Migrate legacy splits (pre-doc_ids): recompute gold-doc sets from
+        # qrels and verify disjointness instead of silently skipping the check.
+        recomputed = _recompute_doc_ids(dataset_dir, train_qids, val_qids)
+        if recomputed is not None:
+            train_doc_ids, val_doc_ids = recomputed
+
     split = DocDisjointSplit(
         train_qids=train_qids,
         val_qids=val_qids,
@@ -103,3 +114,46 @@ def load_doc_disjoint_split(dataset_dir: Union[str, Path]) -> DocDisjointSplit:
     )
     split.validate()
     return split
+
+
+def _recompute_doc_ids(
+    dataset_dir: Union[str, Path], train_qids: Set[str], val_qids: Set[str]
+) -> Optional[tuple[Set[str], Set[str]]]:
+    """Recompute gold-doc sets from qrels_train.parquet for legacy split files."""
+    base = Path(dataset_dir)
+    candidates = [
+        base / "qrels_train.parquet",
+        base / "splits" / "qrels_train.parquet",
+        base.parent / "qrels_train.parquet",
+    ]
+    qrels_p = next((p for p in candidates if p.is_file()), None)
+    if qrels_p is None:
+        try:
+            from src.data.canonical import discover_canonical_dataset_dir
+
+            canon = discover_canonical_dataset_dir()
+            cand = canon / "qrels_train.parquet"
+            if cand.is_file():
+                qrels_p = cand
+        except Exception:
+            qrels_p = None
+    if qrels_p is None:
+        return None
+    try:
+        import pandas as pd
+
+        df = pd.read_parquet(qrels_p, columns=["query_id", "doc_id"])
+        q2d: dict[str, set[str]] = {}
+        for qid, did in zip(df["query_id"].astype(str), df["doc_id"].astype(str)):
+            q2d.setdefault(qid, set()).add(did)
+        train_docs: set[str] = set()
+        for q in train_qids:
+            train_docs.update(q2d.get(q, set()))
+        val_docs: set[str] = set()
+        for q in val_qids:
+            val_docs.update(q2d.get(q, set()))
+        if not train_docs or not val_docs:
+            return None
+        return train_docs, val_docs
+    except Exception:
+        return None

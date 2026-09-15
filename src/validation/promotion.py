@@ -46,17 +46,45 @@ def compare_score_promotion(
 
 
 def aggregate_oof_metrics(fold_metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
-    """Compute macro-average OOF validation metrics across all folds."""
+    """Compute macro-average OOF validation metrics across all folds (mean + std)."""
     if not fold_metrics_list:
         return {}
 
     keys = fold_metrics_list[0].keys()
     agg: Dict[str, float] = {}
     for k in keys:
-        vals = [m[k] for m in fold_metrics_list if k in m]
+        vals = [float(m[k]) for m in fold_metrics_list if k in m]
         if vals:
-            agg[k] = round(sum(vals) / len(vals), 6)
+            mean_v = sum(vals) / len(vals)
+            agg[k] = round(mean_v, 6)
+            if len(vals) > 1:
+                var = sum((v - mean_v) ** 2 for v in vals) / len(vals)
+                agg[f"{k}::std"] = round(var**0.5, 6)
+                agg[f"{k}::n"] = len(vals)
     return agg
+
+
+def check_doc_disjoint_floor(
+    oof_recall_at_5: float,
+    doc_disjoint_recall_at_5: float,
+    max_allowed_drop: float = 0.03,
+) -> Tuple[bool, str]:
+    """Veto promotion if the document-disjoint floor regresses too far below OOF.
+
+    Doc-disjoint is an unseen-statute lower bound (expect 3-8pt drop), not a
+    promotion metric. A drop beyond `max_allowed_drop` signals poor
+    generalization and must block release.
+    """
+    drop = float(oof_recall_at_5) - float(doc_disjoint_recall_at_5)
+    if drop > max_allowed_drop:
+        return False, (
+            f"Doc-disjoint floor violated: OOF recall@5={oof_recall_at_5:.4f}, "
+            f"doc-disjoint recall@5={doc_disjoint_recall_at_5:.4f}, "
+            f"drop={drop:.4f} > {max_allowed_drop:.4f}"
+        )
+    return True, (
+        f"Doc-disjoint floor OK: drop={drop:.4f} <= {max_allowed_drop:.4f}"
+    )
 
 
 def create_production_lock(

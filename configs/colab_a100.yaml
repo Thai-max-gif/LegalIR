@@ -9,16 +9,16 @@ training:
   per_device_batch_size: 8
   gradient_accumulation_steps: 2
   learning_rate: 2.0e-5
-  max_length: 512
+  max_length: 384
   warmup_ratio: 0.1
   weight_decay: 0.01
 
 model:
   base_model: "BAAI/bge-reranker-v2-m3"
-  lora_r: 16
-  lora_alpha: 32
+  lora_r: 8
+  lora_alpha: 16
   lora_dropout: 0.05
-  target_modules: ["query", "value", "key"]
+  target_modules: ["query", "value", "key", "dense"]
 
 submission:
   max_answers: 5

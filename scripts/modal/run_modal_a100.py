@@ -8,10 +8,11 @@ import modal
 app = modal.App("legalir-a100-production")
 
 # Define the environment image
-# We install Git to clone the repository and standard requirements for the pipeline.
+# Pinned to match requirements-colab.txt (verified: transformers 5.15.1 exists).
+# Python 3.11 to match torch==2.1.2 wheels (torch 2.1 has no cp312 wheels).
 # PyTorch is installed with CUDA 12.1 support, which is suitable for A100.
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     .pip_install(
         "torch==2.1.2",
@@ -35,6 +36,12 @@ image = (
     )
 )
 
+# Persistent volume: without this a 5h timeout kill loses everything
+# (5-fold OOF + final LoRA has no checkpoint-resume; trainer saves only at end).
+# Partial outputs are synced here on success AND on failure for forensics.
+volume = modal.Volume.from_name("legalir-production", create_if_missing=True)
+VOLUME_MOUNT = "/root/legalir_volume"
+
 # 5 hours timeout (5 * 60 * 60 = 18000 seconds) to prevent excessive billing
 TIMEOUT_SECONDS = 18000
 
@@ -42,6 +49,7 @@ TIMEOUT_SECONDS = 18000
     image=image,
     gpu=modal.gpu.A100(),
     timeout=TIMEOUT_SECONDS,
+    volumes={VOLUME_MOUNT: volume},
     secrets=[
         modal.Secret.from_name("kaggle-secret"),
         modal.Secret.from_name("huggingface-secret")
@@ -95,29 +103,55 @@ def run_production_training(expected_sha: str):
         raise RuntimeError(f"Hugging Face preflight failed: {hf_detail}")
     print(f"[+] {hf_detail}")
     
-    # 4. Execute the pipeline
+    # 4. Execute the pipeline (sync partial outputs to Volume even on failure,
+    # so a 5h timeout kill is debuggable instead of a total loss).
     output_dir = Path("/root/legalir_production_run")
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+    volume_dir = Path(VOLUME_MOUNT) / expected_sha
+    volume_dir.mkdir(parents=True, exist_ok=True)
+
     from scripts.run_colab_train import run_colab_production_training
-    
+
     print("[*] Starting A100 production training pipeline...")
-    report = run_colab_production_training(
-        dataset_dir=dataset_dir,
-        output_dir=output_dir,
-        smoke_report_path=kaggle_report,
-        colab_t4_report_path=colab_report,
-        expected_sha=expected_sha,
-        precision="bf16",
-        allow_non_a100=False,
-        mock=False,
-        hf_repo=hf_repo,
-        freeze_file_path=freeze_file,
-        run_mode="full",
-    )
-    
+    try:
+        report = run_colab_production_training(
+            dataset_dir=dataset_dir,
+            output_dir=output_dir,
+            smoke_report_path=kaggle_report,
+            colab_t4_report_path=colab_report,
+            expected_sha=expected_sha,
+            precision="bf16",
+            allow_non_a100=False,
+            mock=False,
+            hf_repo=hf_repo,
+            freeze_file_path=freeze_file,
+            run_mode="full",
+        )
+    finally:
+        try:
+            import shutil
+            import time as _time
+            snap = volume_dir / f"snapshot-{_time.strftime('%Y%m%d-%H%M%S')}"
+            snap.mkdir(parents=True, exist_ok=True)
+            for name in ("run_manifest.json", "training.log", "submission.zip",
+                         "submission.json", "checksums.sha256", "resolved_config.yaml"):
+                src = output_dir / name
+                if src.is_file():
+                    shutil.copy2(src, snap / name)
+            # Best-effort adapter snapshot (may be absent on early failure).
+            for sub in ("checkpoints/reranker_final/adapter_config.json",
+                        "final_adapter/adapter_config.json"):
+                src = output_dir / sub
+                if src.is_file():
+                    (snap / Path(sub).name).write_bytes(src.read_bytes())
+                    break
+            volume.commit()
+            print(f"[*] Synced partial outputs to Volume: {snap}", flush=True)
+        except Exception as sync_exc:
+            print(f"[!] Volume sync failed: {type(sync_exc).__name__}", flush=True)
+
     print(f"[+] Training completed. Status: {report.get('status')} | Verdict: {report.get('verdict')}")
-    
+
     # The pipeline internally handles Hugging Face artifact upload and cleanup.
     return report
 
@@ -135,6 +169,9 @@ def main():
             
     print(f"[*] Dispatching A100 training job to Modal for commit: {expected_sha}")
     print("[*] This process will run remotely on an A100 GPU and automatically terminate after 5 hours max.")
+    print("[*] Partial outputs sync to the 'legalir-production' Volume on success AND failure.")
+    print("[*] NOTE: 5h caps duration, not spend — retries/re-runs bill extra. No checkpoint-resume:")
+    print("    a timeout kill still requires a full re-run (Volume holds forensics only).")
     print("[*] Ensure you have created 'kaggle-secret' and 'huggingface-secret' in the Modal dashboard!")
     
     result = run_production_training.remote(expected_sha)

@@ -47,10 +47,10 @@ retrieval:
     dimension: 768
     use_pyvi: true
     top_k: 50
-    max_length: 512
+    max_length: 384
   hybrid_union:
-    top_k_candidates: 150
-    top_k_for_rerank: 50
+    top_k_candidates: 100
+    top_k_for_rerank: 30
     initial_weights:
       bm25: 1.0
       exact: 2.5
@@ -66,7 +66,7 @@ ranking:
     model_name: "BAAI/bge-reranker-v2-m3"
     revision: "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
     batch_size: 16
-    max_length: 512
+    max_length: 384
   fusion:
     method: "rrf"  # rrf | lightgbm
     rrf_k: 60

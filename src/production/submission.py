@@ -1,8 +1,16 @@
-"""Submission formatting, strict validation against competition rules, and zip packaging."""
+"""Submission formatting, strict validation against competition rules, and zip packaging.
+
+DEPRECATED for releases: the authoritative scorer-compatible packager is
+``src.evaluation.submission`` (``{qid: {"answer": [...]}}``). This legacy
+module accepts the bare-list format (``{qid: [...]}``) only for backward
+compatibility with local tooling and converts to canonical form when packaging.
+Do NOT use this module for A100→HF releases.
+"""
 
 from __future__ import annotations
 
 import json
+import warnings
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
@@ -51,17 +59,32 @@ def package_submission(
     out_dir: Union[str, Path],
     filename_prefix: str = "submission",
 ) -> Tuple[Path, Path]:
-    """Save submission.json and compress it into submission.zip."""
+    """Save submission.json and compress it into submission.zip.
+
+    Accepts legacy bare-list format and converts to canonical
+    ``{qid: {"answer": [...]}}`` via ``src.evaluation.submission`` so local
+    tooling cannot emit scorer-incompatible zips.
+    """
+    warnings.warn(
+        "src.production.submission is legacy; releases must use src.evaluation.submission",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from src.evaluation.submission import package_submission as _canonical_package
+
+    canonical: dict[str, dict[str, list[str]]] = {}
+    for qid, val in dict(submission).items():
+        if isinstance(val, dict) and "answer" in val:
+            canonical[str(qid)] = {"answer": [str(x) for x in val["answer"]]}
+        elif isinstance(val, (list, tuple)):
+            canonical[str(qid)] = {"answer": [str(x) for x in val]}
+        else:
+            raise ValueError(f"Query {qid} predictions must be a list or {{'answer': [...]}}.")
+
     out_p = Path(out_dir)
     out_p.mkdir(parents=True, exist_ok=True)
-
     json_path = out_p / f"{filename_prefix}.json"
     zip_path = out_p / f"{filename_prefix}.zip"
-
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(submission, f, indent=2, ensure_ascii=False)
-
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(json_path, arcname=f"{filename_prefix}.json")
-
+    json_path.write_text(json.dumps(canonical, indent=2, ensure_ascii=False), encoding="utf-8")
+    _canonical_package(json_path, zip_path)
     return json_path, zip_path
