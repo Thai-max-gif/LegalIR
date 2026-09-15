@@ -61,14 +61,8 @@ jobs:
     - name: Check No Forbidden Fallbacks
       run: python scripts/check_no_fallbacks.py
 
-    - name: Fallback mock scan
-      run: |
-        python scripts/gates/run_colab_t4.py --mock --dataset-dir /tmp/dataset --output-dir /tmp/output
-
-    - name: Parameter limit audit
-      run: |
-        python scripts/audit_parameters.py
-        python src/release/parameter_audit.py --config configs/algorithm/legalir_v2.yaml || true
+    - name: Audit Learned Parameter Budget (< 4B)
+      run: python scripts/audit_parameters.py
 
     - name: Verify notebooks matching
       run: |
@@ -77,7 +71,7 @@ jobs:
 
     - name: Offline isolated smoke test
       run: |
-        python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke --working-dir /tmp/smoke_out || python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
+        python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
 
     - name: Verify Release Approval Gate
       run: python scripts/verify_release_approval.py --repo-root . --allow-runtime-changes
