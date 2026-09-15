@@ -9,13 +9,16 @@ app = modal.App("legalir-a100-production")
 
 # Define the environment image
 # Pinned to match requirements-colab.txt (verified: transformers 5.15.1 exists).
-# Python 3.11 to match torch==2.1.2 wheels (torch 2.1 has no cp312 wheels).
-# PyTorch is installed with CUDA 12.1 support, which is suitable for A100.
+# Python 3.11 to match torch cp311 wheels. torch>=2.5 is REQUIRED:
+# transformers 5.x lazy-loads model classes only when torch>=2.5 is importable
+# (torch 2.1.2 passes raw `import torch` but fails the backend gate with the
+# misleading "requires the PyTorch library but it was not found" error).
+# PyTorch is installed with CUDA 12.4 support, which is suitable for A100.
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git")
     .pip_install(
-        "torch==2.1.2",
+        "torch==2.5.1",
         "transformers==5.15.1",
         "peft==0.20.0",
         "accelerate==1.14.0",

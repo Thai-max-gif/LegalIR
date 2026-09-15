@@ -219,6 +219,29 @@ def run_a100_production_gate(
             raise
         except Exception:
             pass
+        # Fail-fast torch/transformers compatibility gate. transformers 5.x
+        # lazy-loads model classes only when torch>=2.5 is importable; older
+        # torch passes raw `import torch` but fails hours later at model load
+        # with a misleading "requires PyTorch but not found" error. Catch it
+        # here, before spending GPU time on indexing.
+        try:
+            import torch as _torch_check
+
+            _ver_parts = str(_torch_check.__version__).split("+")[0].split(".")
+            _ver_tuple = (int(_ver_parts[0]), int(_ver_parts[1])) if len(_ver_parts) >= 2 else (0, 0)
+            print(f"  • Torch             : {_torch_check.__version__} (cuda: {_torch_check.version.cuda})", flush=True)
+            if _ver_tuple < (2, 5):
+                raise RuntimeError(
+                    f"Incompatible torch {_torch_check.__version__}: transformers 5.x requires torch>=2.5."
+                )
+            from transformers import is_torch_available as _is_torch_available
+
+            if not _is_torch_available():
+                raise RuntimeError("transformers reports the torch backend unavailable.")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Torch/transformers compatibility preflight failed ({type(exc).__name__}).") from None
         # Fail-closed disk guard: dataset (735MB) + dense index (~675MB) +
         # BM25 indexes + checkpoints + recovery.tar.gz need headroom.
         try:
