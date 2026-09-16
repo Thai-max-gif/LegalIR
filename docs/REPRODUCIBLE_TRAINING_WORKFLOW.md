@@ -4,25 +4,30 @@
 
 ```
 Data Owner (Kaggle Dataset)
-             │
-             ▼
+              │
+              ▼
 Local Pre-Push Gate (python scripts/verify_prepush.py)
-             │
-             ▼
-GitHub Actions CI (PASS)
-             │
-             ▼
-Kaggle 2×T4 Smoke Gate (notebooks/kaggle_t4x2_smoke.ipynb -> PASS)
-             │
-             ▼
-Freeze Run Tuple (Git SHA + Dataset Hash + Smoke Report)
-             │
-             ▼
-Google Colab A100 Production Run (notebooks/colab_a100_train.ipynb)
-             │
-             ▼
+              │
+              ▼
+GitHub Actions CI (PASS: behavioral tests only, not production authorization)
+              │
+              ▼
+Kaggle 2×T4 Smoke Gate (notebooks/kaggle_t4x2_smoke.ipynb -> PASS, sole pre-A100 gate)
+              │
+              ▼
+Freeze Run Tuple (Git SHA + Dataset Hash + Smoke Report + profile digest)
+              │
+              ▼
+A100 Production Run (Modal first via scripts/modal/run_modal_cli.sh,
+                     or Colab fallback via scripts/colab/run_colab_cli.sh A100)
+              │
+              ▼
 Hugging Face Release & Codabench Submission
 ```
+
+Strict release validation (`python scripts/verify_release_approval.py --repo-root .`)
+runs separately on the exact evidence-bearing release. A new runtime without
+fresh evidence is expected to pass CI while strict rejects its stale freeze.
 
 ---
 
@@ -44,13 +49,13 @@ This executes:
 
 ---
 
-### Stage 2: Kaggle 2×T4 Smoke Gate (B1.1)
+### Stage 2: Kaggle 2×T4 Smoke Gate (B1.1, sole pre-A100 gate)
 1. **Open Notebook on Kaggle**:
    - URL: `https://www.kaggle.com/code/phucdangg/legalir-training` (or upload `notebooks/kaggle_t4x2_smoke.ipynb`).
 2. **Attach Dataset**:
    - Kaggle Dataset: `phucdangg/legalir-task1-clean-data` (attached at `/kaggle/input/datasets/phucdangg/legalir-task1-clean-data` or `/kaggle/input/legalir-task1-clean-data`).
 3. **Accelerator**:
-   - Set Accelerator to **GPU T4 × 2** or **GPU T4**.
+   - Set Accelerator to **GPU T4 × 2**.
 4. **Click "Run All"**:
    - Execution time: ~3 minutes.
    - Mines a 50-query leakage-safe subset on the fly.
@@ -59,43 +64,71 @@ This executes:
    - Generates `kaggle_t4x2_report.json` with verdict `"PASS"`.
 
 ### Stage 2b: Colab Single-T4 Contract Gate (B1.15) — RETIRED
-Retired. Kaggle T4x2 (Stage 2a) is the sole pre-A100 hardware gate. The
+Retired. Kaggle T4x2 (Stage 2) is the sole pre-A100 hardware gate. The
 `colab_t4_smoke.ipynb` notebook is no longer generated and the A100 chain does
 not consume `colab_t4_report.json`. (The `run_colab_t4.py` gate script remains
 for manual use only.)
 
 ---
 
-### Stage 3: Google Colab A100 Production Training (B1.2)
+### Stage 3: A100 Production Training (B1.2)
 
-You can run production training either automatically via the **Colab CLI** or manually via the **Colab Web Interface**:
+Repair both backends locally; qualify one candidate; use Modal first unless a
+human chooses otherwise. Do not launch both concurrently.
 
-#### Option A: One-Command Automated CLI Runner (Recommended)
-From your local terminal, run:
+#### Option A: Modal (Recommended First Attempt)
 ```bash
-./scripts/run_colab_cli.sh A100
+scripts/modal/run_modal_cli.sh
+scripts/modal/run_modal_cli.sh --hf-allow-public-repo
+```
+- CPU provenance gate runs before image build/dispatch; remote repeats
+  checkout/provenance → HF access → dataset → train.
+- Durable attempt path: `/root/legalir_volume/<sha>/attempts/<id>/` with
+  explicit Volume commits. No resume; final bytes may be lost on hard kill.
+- 5h function timeout caps duration, not spend. Consent defaults private-only.
+- Record app ID, attempt path, image, SHA, start UTC, ceiling. Enforce kill
+  criteria (OOM/nonfinite; >20min without meaningful progress in chatty phases;
+  5h limit; spend ceiling). Confirm app termination via `modal app stop <id> --yes`
+  (verify CLI syntax first), not just client exit.
+
+#### Option B: Colab CLI Fallback (Supervised)
+```bash
+./scripts/colab/run_colab_cli.sh A100
 ```
 This script automatically:
-1. Provisions an NVIDIA A100 GPU session (`colab new -s legalir-a100-run --gpu A100`).
-2. Uploads local credentials from `.env` to `/content/.env` on the VM.
-3. Executes `notebooks/colab_a100_train.ipynb` with a 4-hour timeout.
-4. Trains the full BGE LoRA reranker on all 7,000 queries using `torch.bfloat16`.
-5. Validates and packages `submission.zip`.
-6. Uploads the final adapter, logs, metrics, and `run_manifest.json` directly to your private Hugging Face model repository: `https://huggingface.co/dangphuc2109/legalir-task1-reranker`.
-7. Once finished, releases the VM with `colab stop -s legalir-a100-run` to protect your compute credits.
+1. Validates mode/tools/`COLAB_TIMEOUT` (default 18000s = 5h wait, not a billing cap).
+2. Runs local provenance preflight before allocation.
+3. Provisions a unique A100 session (`colab new -s legalir-a100-production-<rand> --gpu A100`).
+4. Uploads allowlisted `.env`, required launch JSON, and gate/freeze overrides
+   (required when present; failure never falls back to different evidence).
+5. Executes `notebooks/colab_a100_train.ipynb` with the 5h wait.
+6. Trains FULL: retrieval/indexing, five fold trainings/evaluations,
+   doc-disjoint training/evaluation, fusion evaluation, final 7,000-query
+   training (≈875 steps), inference, validation, HF artifact + receipt upload,
+   recovery finalization. Five-hour completion is unmeasured, not assured.
+7. Bounded recovery to `artifacts/task1/production/<session>/` (manifest/log +
+   archive or both submissions required for exit 0) and bounded stop (30s).
+   Exit precedence: primary wins; else stop failure=70; else incomplete=74.
+8. Publishes to `https://huggingface.co/dangphuc2109/legalir-task1-reranker`
+   only with explicit consent for public repos; auth always required.
 
-*Tip: To test with a low-cost GPU first before using A100 credits, simply pass `T4`:*
-```bash
-./scripts/run_colab_cli.sh T4
-```
+Retired: `./scripts/run_colab_cli.sh T4` and any 4-hour/11.1h wording. The old
+`COLAB_TIMEOUT=40000s` (11.1h) exceeded typical VM lifetime and is replaced by
+the 5h default. No promise that FULL fits 5h.
 
-#### Option B: Manual Web Interface
+#### Option C: Manual Web Interface (Colab)
 1. **Open Notebook on Google Colab**:
-   - Open `notebooks/colab_a100_train.ipynb`.
+   - Open `notebooks/colab_a100_train.ipynb` (generated; do not hand-edit).
 2. **Select Runtime**:
    - Runtime $\rightarrow$ Change runtime type $\rightarrow$ **NVIDIA A100 GPU** (High-RAM).
 3. **Configure Secrets**:
-   - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN` using a fine-grained token with read access to public models and write access to `HF_REPO_ID` (defaults to `dangphuc2109/legalir-task1-reranker`). The gate verifies access pre-training and fails fast on rejected tokens.
+   - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN_WRITE` (or `HF_TOKEN`)
+     with write access to `HF_REPO_ID` (defaults to `dangphuc2109/legalir-task1-reranker`),
+     plus Kaggle vars and optionally `HF_ALLOW_PUBLIC_REPO=1` for explicit public
+     opt-in (Secrets win over uploaded `.env`). The gate verifies access
+     before training and fails fast on rejected tokens; unknown visibility blocks.
 4. **Click "Run All"**:
-   - Preflight verifies GPU is NVIDIA A100 and confirms Kaggle Smoke Gate passed.
-   - Executes full training, validates submission, and publishes artifacts to Hugging Face.
+   - Verifies A100 before training (runtime already allocated at this point) and
+     confirms the Kaggle T4x2 gate passed.
+   - Executes FULL training as above, validates submission, publishes artifacts
+     with immutable receipts, and finalizes recovery.

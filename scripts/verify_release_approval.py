@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-CLI tool and release-governance gate to verify that release_approval.json satisfies
-all release provenance, Git lineage, Colab T4 invariants, and Kaggle pin requirements.
+Current release verification (Kaggle T4x2 sole pre-A100 gate) plus legacy mode.
 
-Authoritative specification: LEGALIR_88E1_ARCHITECTURE_REPAIR.md
+Default (current) authority: validates the current checkout HEAD against the
+current freeze via scripts.colab.bootstrap.verify_launch. CPU verification
+only; not hardware proof and not spending approval.
+
+Legacy historical validator (single-T4 era) is available only behind
+explicit --legacy for old tests/users; never silently falls back.
+Production (current) mode never accepts --allow-runtime-changes.
 """
 
 from __future__ import annotations
@@ -11,8 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -32,7 +39,7 @@ from src.release.provenance import (
     verify_colab_report_invariants,
 )
 
-# Compatibility wrapper for existing tests and CLI invocation
+# Compatibility wrapper for existing tests and CLI invocation (legacy semantics preserved)
 def validate_release_approval_v2(
     approval: Mapping[str, Any],
     repo_root: Path | str = ".",
@@ -55,61 +62,46 @@ def validate_release_approval_v2(
     )
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Verify release approval artifact consistency.")
-    parser.add_argument(
-        "--approval",
-        type=Path,
-        default=DEFAULT_APPROVAL_PATH,
-        help="Path to release_approval.json",
-    )
-    parser.add_argument(
-        "--colab-report",
-        type=Path,
-        default=DEFAULT_COLAB_REPORT_PATH,
-        help="Path to colab_smoke_report.json",
-    )
-    parser.add_argument(
-        "--repo-root",
-        type=Path,
-        default=REPO_ROOT,
-        help="Repository root path",
-    )
-    parser.add_argument(
-        "--head",
-        type=str,
-        default=None,
-        help="Optional release HEAD commit override (defaults to 'git rev-parse HEAD')",
-    )
-    parser.add_argument(
-        "--allow-runtime-changes",
-        action="store_true",
-        help="Allow runtime code differences between approved runtime commit and current HEAD during development/CI testing before release commit",
-    )
-    parser.add_argument(
-        "--verify-ci-run",
-        action="store_true",
-        help="Query GitHub Actions API to verify that runtime commit CI was successful",
-    )
-    parser.add_argument(
-        "--token",
-        type=str,
-        default=None,
-        help="Optional GitHub personal access token for API rate limits",
-    )
+def _run_current(repo_root: Path, kaggle_report: Path | None, freeze_file: Path | None) -> int:
+    """Strict current release check: HEAD vs freeze via common validator."""
+    from scripts.colab.bootstrap import verify_launch
 
-    args = parser.parse_args()
+    root = Path(repo_root)
+    try:
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(root), text=True, stderr=subprocess.PIPE
+        ).strip()
+    except Exception as exc:
+        print(f"[-] Failed to derive HEAD: {exc}", file=sys.stderr)
+        return 1
+    k_path = Path(kaggle_report) if kaggle_report else root / "artifacts/task1/gates/kaggle_t4x2_report.json"
+    f_path = Path(freeze_file) if freeze_file else root / "artifacts/task1/freeze/production_freeze.json"
+    try:
+        freeze = verify_launch(head, k_path, f_path, repo_root=root)
+    except Exception as exc:
+        print(f"[-] Current release verification FAILED for HEAD {head}: {exc}", file=sys.stderr)
+        return 1
+    print("=================================================================")
+    print("LegalIR Current Release Verification (Kaggle T4x2 gate)")
+    print(f"  • Release HEAD : {head}")
+    print(f"  • Runtime SHA  : {freeze.get('git_sha')}")
+    print(f"  • Freeze       : {f_path}")
+    print(f"  • Kaggle report: {k_path}")
+    print("=================================================================")
+    print("[+] SUCCESS: current HEAD is approved for A100 launch validation (CPU only).")
+    print("    This is not hardware proof and not spending approval.")
+    return 0
 
+
+def _run_legacy(args) -> int:
     if not args.approval.exists():
         print(f"[-] Release approval file not found: {args.approval}", file=sys.stderr)
         return 1
-
     try:
         approval_data = json.loads(args.approval.read_text(encoding="utf-8"))
     except Exception as exc:
         print(f"[-] Failed to parse release approval JSON: {exc}", file=sys.stderr)
         return 1
-
     is_valid, errors, meta = validate_release_approval_v2(
         approval_data,
         repo_root=args.repo_root,
@@ -118,9 +110,8 @@ def main() -> int:
         verify_github_actions=args.verify_ci_run,
         github_token=args.token,
     )
-
     print("=================================================================")
-    print("LegalIR Release Approval Consistency Gate")
+    print("LegalIR Release Approval Consistency Gate (LEGACY single-T4 era)")
     print(f"  • Approved Runtime SHA: {meta['runtime_sha']}")
     print(f"  • Actual Release HEAD : {meta['actual_release_head']}")
     print(f"  • Kaggle EXPECTED_COMMIT: {meta['kaggle_expected_commit']}")
@@ -132,22 +123,45 @@ def main() -> int:
     else:
         print("      (none - identical commits)")
     print("=================================================================")
-
     if is_valid:
         print("[+] SUCCESS: Release approval artifact is valid and provenance-consistent.")
         print("[+] Kaggle FULL is authorized on approved runtime commit.")
         return 0
     else:
-        # If allow-runtime-changes is set and all errors are disallowed file changes/lineage diffs/pin drift
         if args.allow_runtime_changes and all("changed between" in e or "disallowed" in e.lower() or "lineage" in e.lower() or "does not contain pinned" in e for e in errors):
             print("[*] NOTICE: Runtime changes detected between approved runtime SHA and current HEAD.")
             print("[*] Passing gate because --allow-runtime-changes is enabled (Commit A in two-commit model).")
             return 0
-
         print("[-] FAILURE: Release approval validation errors detected:", file=sys.stderr)
         for err in errors:
             print(f"    - {err}", file=sys.stderr)
         return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Verify current release (default) or legacy approval (--legacy).")
+    parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="Repository root path")
+    parser.add_argument("--kaggle-report", type=Path, default=None, help="Kaggle T4x2 report (current mode)")
+    parser.add_argument("--freeze-file", type=Path, default=None, help="Production freeze (current mode)")
+    parser.add_argument("--legacy", action="store_true", help="Use historical single-T4 validator only")
+    parser.add_argument("--approval", type=Path, default=DEFAULT_APPROVAL_PATH, help="Path to release_approval.json (legacy only)")
+    parser.add_argument("--colab-report", type=Path, default=DEFAULT_COLAB_REPORT_PATH, help="Path to colab_smoke_report.json (legacy only)")
+    parser.add_argument("--head", type=str, default=None, help="Optional release HEAD override (legacy only)")
+    parser.add_argument("--allow-runtime-changes", action="store_true", help="Legacy development bypass; rejected in current production mode")
+    parser.add_argument("--verify-ci-run", action="store_true", help="Query GitHub Actions API (legacy only)")
+    parser.add_argument("--token", type=str, default=None, help="GitHub token (legacy only)")
+    args = parser.parse_args(argv)
+
+    if not args.legacy:
+        if args.allow_runtime_changes:
+            print("[-] --allow-runtime-changes is rejected in current production mode.", file=sys.stderr)
+            return 2
+        if args.head is not None or args.verify_ci_run or args.token is not None:
+            print("[-] --head/--verify-ci-run/--token are legacy-only; use --legacy to select historical behavior.", file=sys.stderr)
+            return 2
+        # Default mode never reads legacy release_approval.json.
+        return _run_current(args.repo_root, args.kaggle_report, args.freeze_file)
+    return _run_legacy(args)
 
 
 if __name__ == "__main__":

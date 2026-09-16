@@ -4,11 +4,10 @@ LegalIR Authoritative Colab A100 Production Gate Runner (Notion B1.2).
 Executes full production training with BAAI/bge-reranker-v2-m3 + LoRA on all 7,000 queries.
 Enforces:
 1. Single NVIDIA A100 GPU (cuda:0).
-2. Prior Kaggle Dual-T4 PASS report.
-3. Prior Colab Single-T4 PASS report.
-4. Cryptographic dataset, Git SHA, and config fingerprint matches.
-5. End-to-end BF16 precision.
-6. Top-5 submission validation and Hugging Face release.
+2. Prior Kaggle Dual-T4 PASS report (sole pre-A100 hardware gate).
+3. Cryptographic dataset, Git SHA, and config fingerprint matches.
+4. End-to-end BF16 precision.
+5. Top-5 submission validation and Hugging Face release.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import argparse
 import gc
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -68,6 +68,10 @@ def preflight_huggingface_access(
     New repos are created private. Pushing to an existing PUBLIC repo requires
     explicit opt-in (allow_public_repo=True); the override is recorded in the
     run manifest so releases never go public by accident.
+
+    NOTE: this preflight is potentially mutating because it invokes
+    create_repo(repo_id, private=True, exist_ok=True); do not describe it as
+    a read-only audit.
     """
     token = resolve_hf_token(token)
     if not token:
@@ -80,20 +84,32 @@ def preflight_huggingface_access(
         api.auth_check(repo_id=repo_id, repo_type="model", write=True)
         # Enforce private visibility: exist_ok=True does not flip a public repo
         # back to private, so an accidentally-public release repo must fail fast
-        # unless the operator explicitly opts in.
-        visibility = "private"
+        # unless the operator explicitly opts in. Unknown metadata or lookup
+        # failure blocks preflight (fail closed).
         try:
             info = api.repo_info(repo_id=repo_id, repo_type="model")
-            if getattr(info, "private", None) is False:
-                visibility = "public"
-                if not allow_public_repo:
-                    return False, f"HF repo {repo_id} exists but is PUBLIC; release requires a private repo (or explicit opt-in)."
+            private = getattr(info, "private", None)
+            if private is not True and private is not False:
+                return False, "Cannot verify Hugging Face repository visibility; blocking release."
+            if private is False and not allow_public_repo:
+                return False, f"HF repo {repo_id} exists but is PUBLIC; release requires a private repo (or explicit opt-in)."
+            if private is False:
                 print(f"[!] OPERATOR OVERRIDE: pushing release artifacts to PUBLIC repo {repo_id}.", flush=True)
-        except Exception:
-            pass
-        return True, f"authenticated as @{user}; verified write access to {repo_id} ({visibility})"
+                return True, f"authenticated as @{user}; verified write access to {repo_id} (public)"
+            return True, f"authenticated as @{user}; verified write access to {repo_id} (private)"
+        except Exception as exc:
+            if isinstance(exc, RuntimeError) and "PUBLIC" in str(exc):
+                raise
+            # Lookup failure or unverifiable visibility: fail closed without
+            # exposing token-bearing exception text.
+            return False, f"Cannot verify Hugging Face repository visibility ({type(exc).__name__}); blocking release."
     except Exception as exc:
         # Hub exceptions can contain request details; never log their raw text.
+        msg = str(exc)
+        if "PUBLIC" in msg and "explicit opt-in" in msg:
+            # Preserve the explicit public-without-consent rejection without
+            # leaking Hub internals.
+            return False, msg
         return False, f"Cannot verify Hugging Face write access ({type(exc).__name__}); check token scopes, network, and huggingface_hub version."
 
 
@@ -127,12 +143,19 @@ def upload_artifacts_to_huggingface(
         api.create_repo(repo_id=repo_id, repo_type="model", private=True, exist_ok=True)
         try:
             _info = api.repo_info(repo_id=repo_id, repo_type="model")
-            if getattr(_info, "private", None) is False and not allow_public_repo:
+            private = getattr(_info, "private", None)
+            if private is not True and private is not False:
+                raise RuntimeError("Cannot verify Hugging Face repository visibility")
+            if private is False and not allow_public_repo:
                 raise RuntimeError(f"HF repo {repo_id} is PUBLIC; release requires a private repo (or explicit opt-in).")
+            if private is False:
+                print(f"[!] OPERATOR OVERRIDE: pushing release artifacts to PUBLIC repo {repo_id}.", flush=True)
         except RuntimeError:
             raise
-        except Exception:
-            pass
+        except Exception as lookup_exc:
+            raise RuntimeError(
+                f"Hugging Face upload failed ({type(lookup_exc).__name__}); artifacts remain at {output_dir}."
+            ) from None
         commit = api.upload_folder(
             repo_id=repo_id,
             repo_type="model",
@@ -308,7 +331,7 @@ def run_a100_production_gate(
     else:
         runtime_sha = actual_sha.lower()
 
-    # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 & Colab Single-T4)
+    # 5. Upstream Gate Chain Verification (Kaggle Dual-T4 sole pre-A100 gate)
     if kaggle_report_path:
         k_p = Path(kaggle_report_path)
         if k_p.is_file():
@@ -535,11 +558,30 @@ def run_a100_production_gate(
                 repo_type="model",
                 commit_message=f"Record artifact commit {hf_commit[:8]}",
             )
+            receipt_oid = getattr(receipt, "oid", None)
+            if not isinstance(receipt_oid, str) or not re.fullmatch(r"[0-9a-f]{40}", receipt_oid):
+                run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+                raise RuntimeError(
+                    f"Release manifest upload failed (InvalidReceipt); artifact commit is {hf_commit}."
+                )
         except Exception as exc:
-            run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            # Keep partial artifacts recoverable: the non-RELEASED manifest with
+            # the artifact commit is already staged above on receipt failure
+            # paths; ensure it is written before raising.
+            if not run_manifest_path.is_file():
+                run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            else:
+                try:
+                    current = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+                except Exception:
+                    current = {}
+                if current.get("status") == "RELEASED":
+                    run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+            if isinstance(exc, RuntimeError) and "InvalidReceipt" in str(exc):
+                raise
             raise RuntimeError(f"Release manifest upload failed ({type(exc).__name__}); artifact commit is {hf_commit}.") from None
         manifest = final_manifest
-        manifest["huggingface"]["manifest_commit_sha"] = receipt.oid
+        manifest["huggingface"]["manifest_commit_sha"] = receipt_oid
         run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
     print("=================================================================", flush=True)

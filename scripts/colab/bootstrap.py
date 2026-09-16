@@ -11,8 +11,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.release.fingerprints import (
-    CRITICAL_DATASET_FILES, assert_exact_git_sha, fingerprint_structured_config,
-    verify_dataset_fingerprint, verify_prior_gate_reports,
+    CRITICAL_DATASET_FILES, assert_exact_git_sha, compute_canonical_json_hash,
+    fingerprint_structured_config, verify_dataset_fingerprint, verify_prior_gate_reports,
 )
 
 REQUIRED_FILES = (*CRITICAL_DATASET_FILES, "manifest.json", "audit_report.json", "dataset_manifest.json")
@@ -33,10 +33,21 @@ def configure_kaggle_credentials():
 def verify_launch(expected_sha, kaggle_report, freeze_file, repo_root=REPO_ROOT):
     """Reject stale gate evidence before allocating an expensive GPU VM.
 
-    Kaggle dual-T4 (B1.1) is the sole pre-A100 hardware gate.
+    Kaggle dual-T4 (B1.1) is the sole pre-A100 hardware gate. This is the
+    single current CPU launch validator: freeze/report integrity is compared
+    here, not in a competing validator. CPU verification is not hardware
+    proof and not spending approval.
     """
     sha = assert_exact_git_sha(expected_sha, repo_root=repo_root)
-    freeze = json.loads(Path(freeze_file).read_text(encoding="utf-8"))
+    # No fallback: an explicit missing file is a hard failure.
+    freeze_path = Path(freeze_file)
+    if not freeze_path.is_file():
+        raise RuntimeError(f"Production freeze missing: {freeze_path}")
+    report_path = Path(kaggle_report)
+    if not report_path.is_file():
+        raise RuntimeError(f"Kaggle T4x2 report missing: {report_path}")
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
     runtime_sha = str(freeze.get("git_sha", "")).strip().lower()
     if not runtime_sha:
         raise RuntimeError("Production freeze is missing git_sha!")
@@ -51,14 +62,40 @@ def verify_launch(expected_sha, kaggle_report, freeze_file, repo_root=REPO_ROOT)
                 f"Details: {'; '.join(lineage_errors)}"
             )
     config_hash = fingerprint_structured_config(Path(repo_root) / "configs/algorithm/legalir_v2.yaml")
+    if not freeze.get("algorithm_config_sha256"):
+        raise RuntimeError("Production freeze is missing algorithm_config_sha256")
     if freeze.get("algorithm_config_sha256") != config_hash:
         raise RuntimeError("Production freeze algorithm config mismatch")
-    verify_prior_gate_reports(
-        kaggle_report=json.loads(Path(kaggle_report).read_text(encoding="utf-8")),
+    if not freeze.get("dataset", {}).get("manifest_sha256"):
+        raise RuntimeError("Production freeze is missing dataset.manifest_sha256")
+    gate_res = verify_prior_gate_reports(
+        kaggle_report=report,
         expected_sha=runtime_sha,
         expected_dataset_hash=freeze["dataset"]["manifest_sha256"],
         expected_config_hash=config_hash,
     )
+    # Canonical report digest must match the freeze (fail on absent, not just mismatch).
+    expected_report_sha = freeze.get("gates", {}).get("kaggle_t4x2", {}).get("report_sha256")
+    if not expected_report_sha:
+        raise RuntimeError("Production freeze is missing gates.kaggle_t4x2.report_sha256")
+    if gate_res.kaggle_report_sha256 != expected_report_sha:
+        raise RuntimeError(
+            f"Kaggle report digest mismatch: freeze has '{expected_report_sha}', "
+            f"computed '{gate_res.kaggle_report_sha256}'"
+        )
+    # Report's runtime-profile hash must match the actual Kaggle T4x2 YAML
+    # fingerprint (not the A100 profile). Fail on absent.
+    profile_in_report = report.get("runtime_profile_sha256")
+    if not profile_in_report:
+        raise RuntimeError("Kaggle report is missing runtime_profile_sha256")
+    expected_profile = fingerprint_structured_config(
+        Path(repo_root) / "configs/runtime/kaggle_t4x2.yaml"
+    )
+    if profile_in_report != expected_profile:
+        raise RuntimeError(
+            f"Kaggle runtime-profile mismatch: report has '{profile_in_report}', "
+            f"expected '{expected_profile}' from configs/runtime/kaggle_t4x2.yaml"
+        )
     return freeze
 
 

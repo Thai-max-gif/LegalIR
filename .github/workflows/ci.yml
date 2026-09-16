@@ -24,6 +24,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        # Full history is required for runtime→release ancestry checks.
+        fetch-depth: 0
 
     - name: Set up Python 3.12
       uses: actions/setup-python@v5
@@ -40,6 +43,7 @@ jobs:
       run: |
         python -m compileall -q src tests scripts
         bash -n scripts/colab/run_colab_cli.sh
+        bash -n scripts/modal/run_modal_cli.sh
 
     - name: Verify core imports
       run: |
@@ -73,8 +77,32 @@ jobs:
       run: |
         python scripts/smoke_kaggle_pipeline.py --tiny --run-mode smoke
 
-    - name: Verify Release Approval Gate
-      run: python scripts/verify_release_approval.py --repo-root . --allow-runtime-changes
-
-    - name: Run Pre-Push Gate Verification
+    # Normal runtime CI: behavioral regressions only. This does NOT authorize
+    # production; strict release validation runs separately on the exact
+    # evidence-bearing release (see strict-release job).
+    - name: Run Pre-Push Gate Verification (development validation only)
       run: python scripts/verify_prepush.py --skip-pipeline
+
+  strict-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: test
+    # Strict check runs on the exact evidence-bearing release commit.
+    # A new runtime without fresh Kaggle evidence is expected to fail here
+    # while normal CI passes; after genuine evidence is bundled in an
+    # evidence-only descendant, this job passes for that SHA.
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: 'pip'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    - name: Strict current release verification (Kaggle T4x2 gate)
+      run: python scripts/verify_release_approval.py --repo-root .

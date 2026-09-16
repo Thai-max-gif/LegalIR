@@ -6,118 +6,281 @@
 # is no longer supported; this script provisions an A100 VM and executes
 # notebooks/colab_a100_train.ipynb.
 #
-# Test hook: PYTHON_BIN overrides the interpreter used for local preflight
-# (default: .venv/bin/python).
+# Supervised attempt with best-effort recovery. This does NOT establish
+# survival of VM eviction or local-machine failure (SIGKILL, laptop shutdown,
+# network loss, Colab eviction can defeat local cleanup). A VM-local tarball
+# is not independent durable backup. Unattended Colab with durable checkpoint
+# retention is a separate design requiring explicitly approved external
+# storage; it is not part of this minimal repair.
+#
+# Supervising machine must stay awake and connected. Record the session ID
+# before allocation. Confirm shutdown in the provider session/runtime view,
+# not only a local success string.
+#
+# Test hooks:
+#   PYTHON_BIN overrides the interpreter for local preflight
+#     (default: .venv/bin/python).
+#   CLI_TIMEOUT_PYTHON is the real interpreter for the deadline helper
+#     (default: .venv/bin/python). Tests must not stub deadline enforcement
+#     away via PYTHON_BIN; set CLI_TIMEOUT_PYTHON to a real Python.
+#
+# Timeout policy (§4.3):
+#   COLAB_TIMEOUT default 18000s (5h) for notebook execution wait. This is a
+#   cost-conscious wait limit, NOT a platform-enforced billing cap. Larger
+#   values need separate cost approval. It does not kill the remote process
+#   without a confirmed stop.
+#   Cleanup downloads: 15s manifest/log, 45s archive, 15s ZIP/JSON
+#     (105s total max command time plus small termination overhead).
+#   Stop: 30s, then actionable nonzero failure; no unbounded retry.
 # ==============================================================================
 
-set -Euo pipefail
+set -Eeuo pipefail
 
 GPU_MODE="${1:-A100}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
+CLI_TIMEOUT_PYTHON="${CLI_TIMEOUT_PYTHON:-.venv/bin/python}"
 
-# Filter sensitive or irrelevant variables out of .env before upload
-LOCAL_ENV="${REPO_ROOT}/.env"
-FILTERED_ENV="${REPO_ROOT}/.env.filtered"
-if [ -f "$LOCAL_ENV" ]; then
-    grep -E '^(HF_TOKEN|HF_TOKEN_WRITE|HF_TOKEN_READ|KAGGLE_API_TOKEN|KAGGLE_KEY|KAGGLE_USERNAME|HF_REPO_ID|HF_ALLOW_PUBLIC_REPO|LEGALIR_COMMIT_SHA)=' "$LOCAL_ENV" > "$FILTERED_ENV" || true
-else
-    touch "$FILTERED_ENV"
-fi
-
+# --- Early mode validation (no allocation on invalid mode) ---
 case "$GPU_MODE" in
   A100)
-    GPU="A100"
     NOTEBOOK="notebooks/colab_a100_train.ipynb"
-    SESSION="legalir-a100-production-$(head -c 4 /dev/urandom | xxd -p)"
-    NEW_FLAGS=("--gpu" "A100")
-
-    EXPECTED_SHA="${LEGALIR_COMMIT_SHA:-$(git rev-parse HEAD)}"
-    echo "Running local provenance preflight for A100..."
-    if ! "$PYTHON_BIN" scripts/colab/bootstrap.py --expected-sha "$EXPECTED_SHA"; then
-        echo "[!] Preflight failed. Aborting before Colab allocation." >&2
-        rm -f "$FILTERED_ENV"
-        exit 1
-    fi
-    echo "{\"expected_sha\": \"$EXPECTED_SHA\"}" > legalir_launch.json
     ;;
   *)
     echo "[!] Error: Invalid GPU mode '$GPU_MODE'. Usage: $0 A100 (single-T4 mode retired; Kaggle T4x2 is the pre-A100 gate)" >&2
-    rm -f "$FILTERED_ENV"
     exit 2
     ;;
 esac
+
+# --- Validate COLAB_TIMEOUT before allocation ---
+TIMEOUT="${COLAB_TIMEOUT:-18000}"
+if ! "$CLI_TIMEOUT_PYTHON" -c "import math,sys; v=float(sys.argv[1]); sys.exit(0 if (math.isfinite(v) and v>0) else 1)" "$TIMEOUT" 2>/dev/null; then
+  echo "[!] Invalid COLAB_TIMEOUT: '$TIMEOUT' (must be a positive finite number of seconds)" >&2
+  exit 2
+fi
+# NOTE: COLAB_TIMEOUT is in SECONDS (colab exec --timeout <float> seconds).
+# Do NOT pass milliseconds. Default 18000s = 5h wait limit, not a billing cap.
+# Larger values need separate cost approval.
+
+# --- Private temp files (umask 077) and traps BEFORE secret-bearing files ---
+umask 077
+TMPDIR_PRIVATE="$(mktemp -d -t legalir-colab-XXXXXX)"
+FILTERED_ENV="$TMPDIR_PRIVATE/.env.filtered"
+LAUNCH_JSON="$TMPDIR_PRIVATE/legalir_launch.json"
+TMP_NOTEBOOK="$TMPDIR_PRIVATE/colab_a100_train.tmp.ipynb"
+
+# State for truthful exit precedence.
+PRIMARY_RC=0
+EXEC_RC=0
+EXEC_ATTEMPTED=0
+ALLOC_ATTEMPTED=0
+STOP_RC=0
+CLEANUP_DONE=0
+SESSION=""
+RECOVERY_DIR=""
+
+cleanup() {
+  local trap_rc="${1:-0}"
+  # Idempotent: run at most once. Remove traps and disable errexit so a
+  # failed download cannot bypass stop.
+  if [ "$CLEANUP_DONE" -eq 1 ]; then
+    return 0
+  fi
+  CLEANUP_DONE=1
+  trap - EXIT INT TERM
+  set +e
+
+  # Preserve signal/primary code if no earlier primary failure.
+  if [ "$PRIMARY_RC" -eq 0 ] && [ "$trap_rc" -ne 0 ]; then
+    PRIMARY_RC="$trap_rc"
+  fi
+
+  # Bounded artifact recovery (only if exec was attempted and session exists).
+  if [ "$ALLOC_ATTEMPTED" -eq 1 ] && [ "$EXEC_ATTEMPTED" -eq 1 ] && [ -n "$SESSION" ]; then
+    echo ""
+    echo "[*] Retrieving remote artifacts to $RECOVERY_DIR (bounded)..."
+    mkdir -p "$RECOVERY_DIR"
+    local dl_rc=0
+    "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py 15 colab download /content/legalir_production_run/run_manifest.json "$RECOVERY_DIR/run_manifest.json" -s "$SESSION" >/dev/null 2>&1
+    dl_rc=$?
+    if [ $dl_rc -ne 0 ]; then echo "[!] Warning: manifest download failed (rc=$dl_rc)." >&2; fi
+    "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py 15 colab download /content/legalir_production_run/training.log "$RECOVERY_DIR/training.log" -s "$SESSION" >/dev/null 2>&1
+    dl_rc=$?
+    if [ $dl_rc -ne 0 ]; then echo "[!] Warning: training.log download failed (rc=$dl_rc)." >&2; fi
+    "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py 45 colab download /content/legalir_production_run/recovery.tar.gz "$RECOVERY_DIR/recovery.tar.gz" -s "$SESSION" >/dev/null 2>&1
+    dl_rc=$?
+    if [ $dl_rc -ne 0 ]; then echo "[!] Warning: recovery archive download failed (rc=$dl_rc)." >&2; fi
+    "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py 15 colab download /content/legalir_production_run/submission.zip "$RECOVERY_DIR/submission.zip" -s "$SESSION" >/dev/null 2>&1
+    dl_rc=$?
+    if [ $dl_rc -ne 0 ]; then echo "[!] Warning: submission.zip download failed (rc=$dl_rc)." >&2; fi
+    "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py 15 colab download /content/legalir_production_run/submission.json "$RECOVERY_DIR/submission.json" -s "$SESSION" >/dev/null 2>&1
+    dl_rc=$?
+    if [ $dl_rc -ne 0 ]; then echo "[!] Warning: submission.json download failed (rc=$dl_rc)." >&2; fi
+  fi
+
+  # Bounded stop (attempted once even after ambiguous allocation failure,
+  # in case allocation succeeded server-side).
+  if [ "$ALLOC_ATTEMPTED" -eq 1 ] && [ -n "$SESSION" ]; then
+    echo "[*] Cleaning up: Stopping Colab session '$SESSION' to release compute..."
+    "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py 30 colab stop -s "$SESSION" >/dev/null 2>&1
+    STOP_RC=$?
+    if [ $STOP_RC -eq 0 ]; then
+      echo "[+] Colab session '$SESSION' stopped."
+    else
+      echo "[-] Failed to stop Colab session '$SESSION' (rc=$STOP_RC). Remediation: colab stop -s $SESSION" >&2
+    fi
+  fi
+
+  # Remove only this run's temp files; preserve all original .env files.
+  rm -rf "$TMPDIR_PRIVATE"
+
+  # Exit precedence: primary nonzero wins; otherwise failed stop=70;
+  # otherwise incomplete required recovery=74; otherwise 0.
+  if [ "$PRIMARY_RC" -ne 0 ]; then
+    if [ "$STOP_RC" -ne 0 ]; then
+      echo "[!] Secondary stop failure (rc=$STOP_RC) for session '$SESSION' preserved alongside primary rc=$PRIMARY_RC." >&2
+    fi
+    exit "$PRIMARY_RC"
+  fi
+  if [ "$STOP_RC" -ne 0 ]; then
+    exit 70
+  fi
+  # Primary success requires local manifest/log plus either archive or both
+  # submission files. This is a local handoff requirement, not proof the
+  # archive contains valid model weights; downstream verification must
+  # inspect it.
+  if [ "$EXEC_ATTEMPTED" -eq 1 ]; then
+    local has_manifest=0 has_log=0 has_archive=0 has_zip=0 has_json=0
+    [ -s "$RECOVERY_DIR/run_manifest.json" ] && has_manifest=1
+    [ -s "$RECOVERY_DIR/training.log" ] && has_log=1
+    [ -s "$RECOVERY_DIR/recovery.tar.gz" ] && has_archive=1
+    [ -s "$RECOVERY_DIR/submission.zip" ] && has_zip=1
+    [ -s "$RECOVERY_DIR/submission.json" ] && has_json=1
+    if [ "$has_manifest" -eq 0 ] || [ "$has_log" -eq 0 ]; then
+      echo "[!] Incomplete recovery in $RECOVERY_DIR: manifest/log required." >&2
+      exit 74
+    fi
+    if [ "$has_archive" -eq 0 ] && { [ "$has_zip" -eq 0 ] || [ "$has_json" -eq 0 ]; }; then
+      echo "[!] Incomplete recovery in $RECOVERY_DIR: need archive or both submission files." >&2
+      exit 74
+    fi
+  fi
+  exit 0
+}
+
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'cleanup "$?"' EXIT
+
+# --- Filtered env (allowlisted, original preserved) ---
+LOCAL_ENV="${REPO_ROOT}/.env"
+if [ -f "$LOCAL_ENV" ]; then
+  grep -E '^(HF_TOKEN|HF_TOKEN_WRITE|HF_TOKEN_READ|KAGGLE_API_TOKEN|KAGGLE_KEY|KAGGLE_USERNAME|HF_REPO_ID|HF_ALLOW_PUBLIC_REPO|LEGALIR_COMMIT_SHA)=' "$LOCAL_ENV" > "$FILTERED_ENV" || true
+else
+  : > "$FILTERED_ENV"
+fi
+
+# --- Session and notebook prep ---
+SESSION="legalir-a100-production-$(head -c 4 /dev/urandom | xxd -p)"
+RECOVERY_DIR="artifacts/task1/production/$SESSION"
+NEW_FLAGS=("--gpu" "A100")
+
+EXPECTED_SHA="${LEGALIR_COMMIT_SHA:-$(git rev-parse HEAD)}"
+echo "Running local provenance preflight for A100..."
+set +e
+"$PYTHON_BIN" scripts/colab/bootstrap.py --expected-sha "$EXPECTED_SHA"
+preflight_rc=$?
+set -e
+if [ $preflight_rc -ne 0 ]; then
+  echo "[!] Preflight failed (rc=$preflight_rc). Aborting before Colab allocation." >&2
+  PRIMARY_RC=$preflight_rc
+  # No allocation: cleanup will remove temp files and exit with PRIMARY_RC.
+  exit "$PRIMARY_RC"
+fi
+echo "{\"expected_sha\": \"$EXPECTED_SHA\"}" > "$LAUNCH_JSON"
 
 echo "================================================================="
 echo "LegalIR Google Colab CLI Automation"
 echo "  • Target Mode : $GPU_MODE"
 echo "  • Session     : $SESSION"
 echo "  • Notebook    : $NOTEBOOK"
+echo "  • Timeout     : ${TIMEOUT}s (execution wait, not a billing cap)"
 echo "================================================================="
 
-# Create a temporary copy of the notebook to run, preventing local dirtying
-TMP_NOTEBOOK="${NOTEBOOK}.tmp.ipynb"
+# Private notebook copy to avoid dirtying the repo.
 cp "$NOTEBOOK" "$TMP_NOTEBOOK"
 
-EXEC_EXIT_CODE=0
-
-cleanup() {
-  echo ""
-  echo "[*] Retrieving remote artifacts..."
-  mkdir -p artifacts/task1/production
-  colab download /content/legalir_production_run/recovery.tar.gz artifacts/task1/production/recovery.tar.gz -s "$SESSION" >/dev/null 2>&1 || true
-  colab download /content/legalir_production_run/training.log artifacts/task1/production/training.log -s "$SESSION" >/dev/null 2>&1 || true
-  colab download /content/legalir_production_run/run_manifest.json artifacts/task1/production/run_manifest.json -s "$SESSION" >/dev/null 2>&1 || true
-  colab download /content/legalir_production_run/submission.zip artifacts/task1/production/submission.zip -s "$SESSION" >/dev/null 2>&1 || true
-  colab download /content/legalir_production_run/submission.json artifacts/task1/production/submission.json -s "$SESSION" >/dev/null 2>&1 || true
-
-  echo "[*] Cleaning up: Stopping Colab session '$SESSION' to release compute..."
-  if colab stop -s "$SESSION" >/dev/null 2>&1; then
-      echo "[+] Colab session '$SESSION' stopped."
-  else
-      echo "[-] Failed to stop Colab session '$SESSION'."
-  fi
-  rm -f "$FILTERED_ENV" "$TMP_NOTEBOOK" legalir_launch.json
-
-  if [ $EXEC_EXIT_CODE -ne 0 ]; then
-      echo "[!] Remote notebook execution failed (exit code $EXEC_EXIT_CODE)."
-      exit $EXEC_EXIT_CODE
-  fi
-}
-
-trap cleanup EXIT INT TERM
-
-# 1. Allocate VM
+# 1. Allocate VM (track attempt before call for ambiguous-failure stop).
 echo "[1/4] Allocating Colab VM with ${NEW_FLAGS[*]}..."
+ALLOC_ATTEMPTED=1
+set +e
 colab new -s "$SESSION" "${NEW_FLAGS[@]}"
-
-# 2. Upload local .env & gate prerequisites
-if [ -s "$FILTERED_ENV" ]; then
-    echo "[2/4] Uploading filtered local .env to /content/.env..."
-    colab upload "$FILTERED_ENV" /content/.env -s "$SESSION"
-else
-    echo "[!] Warning: No relevant secrets found in local .env. Secrets must be configured in Colab Secrets."
+new_rc=$?
+set -e
+if [ $new_rc -ne 0 ]; then
+  echo "[!] Colab allocation failed (rc=$new_rc) for session '$SESSION'." >&2
+  PRIMARY_RC=$new_rc
+  exit "$PRIMARY_RC"
 fi
 
-colab upload legalir_launch.json /content/legalir_launch.json -s "$SESSION" || true
+# 2. Upload required inputs (failures block exec; no silent fallback).
+if [ -s "$FILTERED_ENV" ]; then
+  echo "[2/4] Uploading filtered local .env to /content/.env..."
+  set +e
+  colab upload "$FILTERED_ENV" /content/.env -s "$SESSION"
+  up_rc=$?
+  set -e
+  if [ $up_rc -ne 0 ]; then
+    echo "[!] Required filtered .env upload failed (rc=$up_rc)." >&2
+    PRIMARY_RC=$up_rc
+    exit "$PRIMARY_RC"
+  fi
+else
+  echo "[!] Warning: No relevant secrets found in local .env. Secrets must be configured in Colab Secrets."
+fi
 
-# We assume standard artifacts are synced by Git now, but we'll upload if they are local-only
+echo "[2/4] Uploading launch config..."
+set +e
+colab upload "$LAUNCH_JSON" /content/legalir_launch.json -s "$SESSION"
+up_rc=$?
+set -e
+if [ $up_rc -ne 0 ]; then
+  echo "[!] Required launch JSON upload failed (rc=$up_rc)." >&2
+  PRIMARY_RC=$up_rc
+  exit "$PRIMARY_RC"
+fi
+
+# Gate/freeze files: if present locally, they override repo copies and their
+# upload is required (failure must not silently fall back to other evidence).
 for f in artifacts/task1/gates/kaggle_t4x2_report.json artifacts/task1/freeze/production_freeze.json; do
   if [ -f "$f" ]; then
-      colab upload "$f" "/content/$(basename "$f")" -s "$SESSION" >/dev/null 2>&1 || true
+    echo "[2/4] Uploading $f..."
+    set +e
+    colab upload "$f" "/content/$(basename "$f")" -s "$SESSION"
+    up_rc=$?
+    set -e
+    if [ $up_rc -ne 0 ]; then
+      echo "[!] Required upload failed for $f (rc=$up_rc); refusing to fall back to different evidence." >&2
+      PRIMARY_RC=$up_rc
+      exit "$PRIMARY_RC"
+    fi
   fi
 done
 
-# NOTE: COLAB_TIMEOUT is in SECONDS (colab exec --timeout <float> seconds).
-# Do NOT pass milliseconds. Default 40000s = 11.1h (exceeds typical Colab
-# VM lifetime — expect preemption on long 5-fold OOF runs).
-TIMEOUT="${COLAB_TIMEOUT:-40000}"
+# 3. Execute notebook (COLAB_TIMEOUT is execution wait, not a billing cap).
 echo "[3/4] Executing $NOTEBOOK on remote Colab VM (timeout ${TIMEOUT}s)..."
+EXEC_ATTEMPTED=1
 set +e
 colab exec -s "$SESSION" -f "$TMP_NOTEBOOK" --timeout "$TIMEOUT"
-EXEC_EXIT_CODE=$?
+EXEC_RC=$?
 set -e
+if [ $EXEC_RC -ne 0 ]; then
+  echo "[!] Remote notebook execution failed (exit code $EXEC_RC)." >&2
+  PRIMARY_RC=$EXEC_RC
+  exit "$PRIMARY_RC"
+fi
 
-echo "[+] Remote notebook execution completed!"
+echo "[+] Remote notebook execution completed successfully."
+# Normal return triggers EXIT trap which performs bounded recovery + stop.
