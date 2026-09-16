@@ -280,6 +280,26 @@ def _setup_receipt_gate_fixture(tmp_path, monkeypatch, receipt_oid="b" * 40, rec
     monkeypatch.setattr(
         gate_mod, "verify_device_contract", lambda *a, **k: NS(device_names=["NVIDIA A100"], device_count=1)
     )
+    # VRAM guard uses torch.cuda.get_device_properties directly; stub to a
+    # 42 GiB A100 so offline tests are hardware-independent (CI has no GPU
+    # and torch raises RuntimeError for missing driver, which the gate must
+    # re-raise in production but tests must not hit).
+    try:
+        import torch as _torch_for_test
+
+        monkeypatch.setattr(
+            _torch_for_test.cuda,
+            "get_device_properties",
+            lambda *a, **k: NS(name="NVIDIA A100", total_memory=int(42 * 1024**3)),
+        )
+    except Exception:
+        pass
+    try:
+        import transformers as _tf_for_test
+
+        monkeypatch.setattr(_tf_for_test, "is_torch_available", lambda: True)
+    except Exception:
+        pass
     monkeypatch.setattr(gate_mod, "assert_exact_git_sha", lambda *a, **k: sha)
     monkeypatch.setattr(
         gate_mod,
