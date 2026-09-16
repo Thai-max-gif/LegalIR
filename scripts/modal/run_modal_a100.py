@@ -170,92 +170,115 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
     started_utc = _utc_now_iso()
 
     def _update_state(phase: str, outcome: str = "running", exc_class=None) -> None:
-        _write_launcher_state(
-            attempt_dir,
-            {
-                "attempt_id": attempt_id,
-                "expected_sha": sha,
-                "phase": phase,
-                "outcome": outcome,
-                "exception_class": exc_class,
-                "started_utc": started_utc,
-                "updated_utc": _utc_now_iso(),
-            },
-        )
+        # Best-effort: metadata recording must never mask a primary failure or
+        # skip the final persistence attempt. Failures are logged with their
+        # class only (no exception text, tokens, or environment).
+        try:
+            _write_launcher_state(
+                attempt_dir,
+                {
+                    "attempt_id": attempt_id,
+                    "expected_sha": sha,
+                    "phase": phase,
+                    "outcome": outcome,
+                    "exception_class": exc_class,
+                    "started_utc": started_utc,
+                    "updated_utc": _utc_now_iso(),
+                },
+            )
+        except Exception as state_exc:  # noqa: BLE001
+            print(
+                f"[!] launcher_state write failed: {type(state_exc).__name__} "
+                f"(phase={phase} outcome={outcome})",
+                flush=True,
+            )
+
+    def _final_commit_after_failure(primary_class: str) -> None:
+        # A final persistence attempt independent of metadata recording.
+        try:
+            volume.commit()
+            print(f"[*] Committed Volume attempt after failure: {attempt_dir}", flush=True)
+        except Exception as commit_exc:  # noqa: BLE001
+            # Preserve the original failure; report commit problem separately.
+            print(
+                f"[!] Volume commit failed: {type(commit_exc).__name__} at {attempt_dir}; "
+                f"primary failure was {primary_class}",
+                flush=True,
+            )
 
     # Initial metadata before clone/preflight and before expensive work.
     _update_state("checkout")
     _try_commit_best_effort()
 
-    # 1. Clone the repository and checkout the exact expected SHA
-    _update_state("checkout")
-    repo_dir = _resolve_repo_dir()
-    if not repo_dir.exists():
-        print(f"[*] Cloning repository into {repo_dir}...")
-        subprocess.run(["git", "clone", "https://github.com/silent9669/LegalIR.git", str(repo_dir)], check=True)
+    def _run_attempt_body() -> dict:
+        # Attempt body: checkout, provenance, HF preflight, dataset, training.
+        # Raises on failure; the lifecycle finalization below guarantees
+        # best-effort failure metadata plus a final Volume commit for ANY
+        # graceful failure across these phases, then re-raises the original
+        # exception. State updates never mask the primary failure.
+        # 1. Clone the repository and checkout the exact expected SHA
+        _update_state("checkout")
+        repo_dir = _resolve_repo_dir()
+        if not repo_dir.exists():
+            print(f"[*] Cloning repository into {repo_dir}...")
+            subprocess.run(["git", "clone", "https://github.com/silent9669/LegalIR.git", str(repo_dir)], check=True)
 
-    print(f"[*] Checking out exact commit: {sha}")
-    subprocess.run(["git", "fetch", "origin", sha], cwd=repo_dir, check=False)
-    res = subprocess.run(["git", "checkout", "--detach", sha], cwd=repo_dir, capture_output=True, text=True)
-    if res.returncode != 0:
-        print("[*] Checkout fallback: unshallowing repository...")
-        subprocess.run(["git", "fetch", "--unshallow", "origin"], cwd=repo_dir, check=False)
-        subprocess.run(["git", "checkout", "--detach", sha], cwd=repo_dir, check=True)
+        print(f"[*] Checking out exact commit: {sha}")
+        subprocess.run(["git", "fetch", "origin", sha], cwd=repo_dir, check=False)
+        res = subprocess.run(["git", "checkout", "--detach", sha], cwd=repo_dir, capture_output=True, text=True)
+        if res.returncode != 0:
+            print("[*] Checkout fallback: unshallowing repository...")
+            subprocess.run(["git", "fetch", "--unshallow", "origin"], cwd=repo_dir, check=False)
+            subprocess.run(["git", "checkout", "--detach", sha], cwd=repo_dir, check=True)
 
-    if str(repo_dir) not in sys.path:
-        sys.path.insert(0, str(repo_dir))
-    os.chdir(repo_dir)
+        if str(repo_dir) not in sys.path:
+            sys.path.insert(0, str(repo_dir))
+        os.chdir(repo_dir)
 
-    # 2. CPU provenance gate before any expensive work (Kaggle T4x2 gate).
-    from scripts.colab.bootstrap import prepare_dataset, verify_launch
+        # 2. CPU provenance gate before any expensive work (Kaggle T4x2 gate).
+        from scripts.colab.bootstrap import prepare_dataset, verify_launch
 
-    # We must point to the verified artifact paths in the repo
-    kaggle_report = repo_dir / "artifacts/task1/gates/kaggle_t4x2_report.json"
-    freeze_file = repo_dir / "artifacts/task1/freeze/production_freeze.json"
+        # We must point to the verified artifact paths in the repo
+        kaggle_report = repo_dir / "artifacts/task1/gates/kaggle_t4x2_report.json"
+        freeze_file = repo_dir / "artifacts/task1/freeze/production_freeze.json"
 
-    _update_state("provenance")
-    print("[*] Verifying production launch constraints (Kaggle T4x2 gate)...")
-    verify_launch(sha, kaggle_report, freeze_file)
-    _try_commit_best_effort()
+        _update_state("provenance")
+        print("[*] Verifying production launch constraints (Kaggle T4x2 gate)...")
+        verify_launch(sha, kaggle_report, freeze_file)
+        _try_commit_best_effort()
 
-    # 3. Preflight Hugging Face Access BEFORE expensive dataset acquisition.
-    from scripts.gates.run_a100 import preflight_huggingface_access
-    hf_repo = os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
-    _update_state("hf_preflight")
-    print(f"[*] Verifying Hugging Face write access to {hf_repo}...")
-    if hf_allow_public_repo:
-        print("[!] OPERATOR OVERRIDE: public HF repos permitted for this launch (recorded in manifest).", flush=True)
-    hf_ok, hf_detail = preflight_huggingface_access(hf_repo, allow_public_repo=hf_allow_public_repo)
-    if not hf_ok:
-        _update_state("failed", outcome="failed", exc_class="RuntimeError")
-        try:
-            volume.commit()
-        except Exception as commit_exc:  # noqa: BLE001
-            print(f"[!] Volume commit failed: {type(commit_exc).__name__} at {attempt_dir}", flush=True)
-        raise RuntimeError(f"Hugging Face preflight failed: {hf_detail}")
-    print(f"[+] {hf_detail}")
-    _try_commit_best_effort()
+        # 3. Preflight Hugging Face Access BEFORE expensive dataset acquisition.
+        from scripts.gates.run_a100 import preflight_huggingface_access
+        hf_repo = os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
+        _update_state("hf_preflight")
+        print(f"[*] Verifying Hugging Face write access to {hf_repo}...")
+        if hf_allow_public_repo:
+            print("[!] OPERATOR OVERRIDE: public HF repos permitted for this launch (recorded in manifest).", flush=True)
+        hf_ok, hf_detail = preflight_huggingface_access(hf_repo, allow_public_repo=hf_allow_public_repo)
+        if not hf_ok:
+            raise RuntimeError(f"Hugging Face preflight failed: {hf_detail}")
+        print(f"[+] {hf_detail}")
+        _try_commit_best_effort()
 
-    # 4. Acquire Kaggle dataset (outside the output tree; pipeline caches may
-    # reside within the working dir but stay excluded from HF/recovery by
-    # release_files()).
-    _update_state("dataset")
-    dataset_dir = _resolve_dataset_dir()
-    print(f"[*] Downloading and verifying canonical dataset at {dataset_dir}...")
-    prepare_dataset(dataset_dir, freeze_file)
-    _try_commit_best_effort()
+        # 4. Acquire Kaggle dataset (outside the output tree; pipeline caches may
+        # reside within the working dir but stay excluded from HF/recovery by
+        # release_files()).
+        _update_state("dataset")
+        dataset_dir = _resolve_dataset_dir()
+        print(f"[*] Downloading and verifying canonical dataset at {dataset_dir}...")
+        prepare_dataset(dataset_dir, freeze_file)
+        _try_commit_best_effort()
 
-    # 5. Execute the pipeline directly into the Volume-backed attempt dir.
-    # Keep existing run_colab_production_training() archive generation; the
-    # archive is built inside output_dir and committed below, not via a
-    # filtered duplicate snapshot.
-    from scripts.run_colab_train import run_colab_production_training
+        # 5. Execute the pipeline directly into the Volume-backed attempt dir.
+        # Keep existing run_colab_production_training() archive generation; the
+        # archive is built inside output_dir and committed below, not via a
+        # filtered duplicate snapshot.
+        from scripts.run_colab_train import run_colab_production_training
 
-    _update_state("training")
-    print(f"[*] Starting A100 production training pipeline at {output_dir}...")
-    print("[*] Durable attempt path on Volume; background commits do not guarantee final bytes on kill.", flush=True)
-    try:
-        report = run_colab_production_training(
+        _update_state("training")
+        print(f"[*] Starting A100 production training pipeline at {output_dir}...")
+        print("[*] Durable attempt path on Volume; background commits do not guarantee final bytes on kill.", flush=True)
+        return run_colab_production_training(
             dataset_dir=dataset_dir,
             output_dir=output_dir,
             smoke_report_path=kaggle_report,
@@ -268,46 +291,43 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
             run_mode="full",
             hf_allow_public_repo=hf_allow_public_repo,
         )
-    except BaseException as primary_exc:
-        # Graceful failure path: completed weights/archive remain at the
-        # attempt path; explicitly commit the actual attempt directory.
-        exc_class = type(primary_exc).__name__
-        _update_state("failed", outcome="failed", exc_class=exc_class)
-        try:
-            volume.commit()
-            print(f"[*] Committed Volume attempt after failure: {attempt_dir}", flush=True)
-        except Exception as commit_exc:  # noqa: BLE001
-            # Preserve the original failure; report commit problem separately.
-            print(
-                f"[!] Volume commit failed: {type(commit_exc).__name__} at {attempt_dir}; "
-                f"primary failure was {exc_class}",
-                flush=True,
-            )
-        raise
-    else:
-        _update_state("completed", outcome="completed")
-        try:
-            volume.commit()
-            print(f"[*] Committed Volume attempt: {attempt_dir}", flush=True)
-        except Exception as commit_exc:  # noqa: BLE001
-            # Training succeeded but final commit failed: do not return
-            # success. Do not erase a genuine HF receipt; report both.
-            hf_info = report.get("huggingface", {}) if isinstance(report, dict) else {}
-            hf_ok_flag = bool(hf_info.get("uploaded")) if isinstance(hf_info, dict) else False
-            print(
-                f"[!] Volume commit failed: {type(commit_exc).__name__} at {attempt_dir}; "
-                f"HF delivery success={hf_ok_flag}",
-                flush=True,
-            )
-            raise RuntimeError(
-                f"Volume persistence failed ({type(commit_exc).__name__}) at {attempt_dir}; "
-                f"training report exists with HF uploaded={hf_ok_flag}. Inspect the Volume path."
-            ) from None
 
-    print(f"[+] Training completed. Status: {report.get('status')} | Verdict: {report.get('verdict')}")
+    # Lifecycle-wide finalization: any graceful failure after the attempt
+    # directory exists records best-effort failure metadata and attempts a
+    # final Volume commit before the original exception propagates. Neither
+    # step may raise or mask the primary failure.
+    try:
+        _attempt_report = _run_attempt_body()
+    except BaseException as primary_exc:
+        primary_class = type(primary_exc).__name__
+        _update_state("failed", outcome="failed", exc_class=primary_class)
+        _final_commit_after_failure(primary_class)
+        raise
+
+    _update_state("completed", outcome="completed")
+    try:
+        volume.commit()
+        print(f"[*] Committed Volume attempt: {attempt_dir}", flush=True)
+    except Exception as commit_exc:  # noqa: BLE001
+        # Training succeeded but final commit failed: do not return success.
+        # Do not erase an already genuine HF receipt; report delivery success
+        # and local durability failure separately.
+        hf_info = _attempt_report.get("huggingface", {}) if isinstance(_attempt_report, dict) else {}
+        hf_ok_flag = bool(hf_info.get("uploaded")) if isinstance(hf_info, dict) else False
+        print(
+            f"[!] Volume commit failed: {type(commit_exc).__name__} at {attempt_dir}; "
+            f"HF delivery success={hf_ok_flag}",
+            flush=True,
+        )
+        raise RuntimeError(
+            f"Volume persistence failed ({type(commit_exc).__name__}) at {attempt_dir}; "
+            f"training report exists with HF uploaded={hf_ok_flag}. Inspect the Volume path."
+        ) from None
+
+    print(f"[+] Training completed. Status: {_attempt_report.get('status')} | Verdict: {_attempt_report.get('verdict')}")
 
     # The pipeline internally handles Hugging Face artifact upload and cleanup.
-    return report
+    return _attempt_report
 
 @app.local_entrypoint()
 def main(hf_allow_public_repo: bool = False):

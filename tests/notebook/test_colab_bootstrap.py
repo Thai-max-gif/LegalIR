@@ -7,6 +7,17 @@ import pytest
 from scripts.generate_notebooks import build_colab_train_notebook
 
 
+def _checkout_cell_source(commit_sha="a" * 40, checkout=None):
+    """Return the actual generated Cell 2 source, optionally repointed at checkout."""
+    import subprocess
+    source = "".join(build_colab_train_notebook(commit_sha)["cells"][2]["source"])
+    if checkout is not None:
+        # Substitute just the Colab filesystem expression; execute the actual generated cell.
+        source = source.replace('Path("/content/LegalIR") if Path("/content").exists() else Path.cwd()', repr(str(checkout)))
+        source = source.replace('REPO_DIR = ' + repr(str(checkout)), 'REPO_DIR = Path(' + repr(str(checkout)) + ')')
+    return source
+
+
 def test_a100_checkout_changes_working_directory(tmp_path, monkeypatch):
     """Execute the checkout cell with git stubbed; imports alone don't set cwd."""
     import subprocess
@@ -16,15 +27,36 @@ def test_a100_checkout_changes_working_directory(tmp_path, monkeypatch):
     (checkout / "scripts" / "colab").mkdir(parents=True)
     (checkout / "scripts" / "colab" / "bootstrap.py").touch()
     monkeypatch.chdir(tmp_path)
+    # Explicit release selection, as required by the generated cell.
+    monkeypatch.setenv("LEGALIR_COMMIT_SHA", "a" * 40)
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="a" * 40 + "\n"))
-    source = "".join(build_colab_train_notebook("a" * 40)["cells"][2]["source"])
-    # Substitute just the Colab filesystem expression; execute the actual generated cell.
-    source = source.replace('Path("/content/LegalIR") if Path("/content").exists() else Path.cwd()', repr(str(checkout)))
-    source = source.replace('REPO_DIR = ' + repr(str(checkout)), 'REPO_DIR = Path(' + repr(str(checkout)) + ')')
+    source = _checkout_cell_source("a" * 40, checkout)
     import sys
     monkeypatch.setattr(sys, "path", list(sys.path))
     exec(compile(source, "checkout-cell", "exec"), {"os": os, "sys": sys, "json": __import__("json")})
     assert Path.cwd() == checkout
+
+
+def test_a100_checkout_cell_rejects_missing_release_selection(tmp_path, monkeypatch):
+    """Without launch JSON or LEGALIR_COMMIT_SHA the cell must fail fast with
+    an actionable error instead of silently checking out the stale runtime pin."""
+    import subprocess
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGALIR_COMMIT_SHA", raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="a" * 40 + "\n"))
+    source = _checkout_cell_source("b" * 40, checkout)
+    import sys
+    with pytest.raises(RuntimeError, match="explicit release selection"):
+        exec(compile(source, "checkout-cell", "exec"), {"os": os, "sys": sys, "json": __import__("json")})
+
+
+def test_a100_checkout_cell_documents_release_selection():
+    source = "".join(build_colab_train_notebook("a" * 40)["cells"][2]["source"])
+    assert "explicit release selection" in source
+    assert "scripts/colab/run_colab_cli.sh" in source
 
 
 def test_a100_secret_keys_and_dependency_contract():

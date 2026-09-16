@@ -15,7 +15,9 @@
 #
 # Supervising machine must stay awake and connected. Record the session ID
 # before allocation. Confirm shutdown in the provider session/runtime view,
-# not only a local success string.
+# not only a local success string. Local process termination is not evidence
+# of remote shutdown: cleanup always attempts a confirmed stop, and a failed
+# stop is an incident even when the local wrapper exits.
 #
 # Test hooks:
 #   PYTHON_BIN overrides the interpreter for local preflight
@@ -23,12 +25,24 @@
 #   CLI_TIMEOUT_PYTHON is the real interpreter for the deadline helper
 #     (default: .venv/bin/python). Tests must not stub deadline enforcement
 #     away via PYTHON_BIN; set CLI_TIMEOUT_PYTHON to a real Python.
+#   COLAB_NEW_TIMEOUT / COLAB_UPLOAD_TIMEOUT override the allocation and
+#     per-upload deadlines (defaults below). Tests set these small; operators
+#     need separate cost approval to raise them.
 #
 # Timeout policy (§4.3):
-#   COLAB_TIMEOUT default 18000s (5h) for notebook execution wait. This is a
-#   cost-conscious wait limit, NOT a platform-enforced billing cap. Larger
-#   values need separate cost approval. It does not kill the remote process
-#   without a confirmed stop.
+#   COLAB_TIMEOUT default 18000s (5h) is the whole-notebook wall-clock bound
+#   enforced externally around the complete execution command. The same value
+#   is also passed to `colab exec --timeout`, which the installed CLI applies
+#   PER CELL (it loops over cells and supplies the timeout to each
+#   runtime.execute_code call), so the per-cell flag alone cannot bound a
+#   multi-cell notebook. Setup time and bounded cleanup time are separate and
+#   additional. None of these is a platform-enforced billing cap. Larger
+#   values need separate cost approval. A wait timeout does not kill the
+#   remote process without a confirmed stop.
+#   Allocation: COLAB_NEW_TIMEOUT default 180s. Required uploads:
+#   COLAB_UPLOAD_TIMEOUT default 120s each. On timeout the primary failure
+#   (124) is preserved and bounded shutdown of the recorded session is still
+#   attempted, including ambiguous allocation outcomes.
 #   Cleanup downloads: 15s manifest/log, 45s archive, 15s ZIP/JSON
 #     (105s total max command time plus small termination overhead).
 #   Stop: 30s, then actionable nonzero failure; no unbounded retry.
@@ -54,15 +68,21 @@ case "$GPU_MODE" in
     ;;
 esac
 
-# --- Validate COLAB_TIMEOUT before allocation ---
+# --- Validate all deadlines before allocation ---
 TIMEOUT="${COLAB_TIMEOUT:-18000}"
-if ! "$CLI_TIMEOUT_PYTHON" -c "import math,sys; v=float(sys.argv[1]); sys.exit(0 if (math.isfinite(v) and v>0) else 1)" "$TIMEOUT" 2>/dev/null; then
-  echo "[!] Invalid COLAB_TIMEOUT: '$TIMEOUT' (must be a positive finite number of seconds)" >&2
-  exit 2
-fi
-# NOTE: COLAB_TIMEOUT is in SECONDS (colab exec --timeout <float> seconds).
-# Do NOT pass milliseconds. Default 18000s = 5h wait limit, not a billing cap.
-# Larger values need separate cost approval.
+NEW_TIMEOUT="${COLAB_NEW_TIMEOUT:-180}"
+UPLOAD_TIMEOUT="${COLAB_UPLOAD_TIMEOUT:-120}"
+for _spec in "COLAB_TIMEOUT:$TIMEOUT" "COLAB_NEW_TIMEOUT:$NEW_TIMEOUT" "COLAB_UPLOAD_TIMEOUT:$UPLOAD_TIMEOUT"; do
+  _name="${_spec%%:*}"
+  _val="${_spec#*:}"
+  if ! "$CLI_TIMEOUT_PYTHON" -c "import math,sys; v=float(sys.argv[1]); sys.exit(0 if (math.isfinite(v) and v>0) else 1)" "$_val" 2>/dev/null; then
+    echo "[!] Invalid $_name: '$_val' (must be a positive finite number of seconds)" >&2
+    exit 2
+  fi
+done
+# NOTE: COLAB_TIMEOUT is in SECONDS. Do NOT pass milliseconds. Default 18000s
+# = 5h whole-notebook wall clock, not a billing cap. Larger values need
+# separate cost approval.
 
 # --- Private temp files (umask 077) and traps BEFORE secret-bearing files ---
 umask 077
@@ -80,6 +100,39 @@ STOP_RC=0
 CLEANUP_DONE=0
 SESSION=""
 RECOVERY_DIR=""
+# PID of the currently supervised foreground child (0 when idle). On INT/TERM
+# the handler terminates this child so a signal to the wrapper PID alone still
+# reaches bounded cleanup promptly; bash would otherwise defer traps while
+# waiting for a foreground command.
+ACTIVE_CHILD=0
+
+on_int() {
+  if [ "$ACTIVE_CHILD" -ne 0 ]; then
+    kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  exit 130
+}
+
+on_term() {
+  if [ "$ACTIVE_CHILD" -ne 0 ]; then
+    kill -TERM "$ACTIVE_CHILD" 2>/dev/null || true
+  fi
+  exit 143
+}
+
+# Run a potentially-blocking command supervised: traps stay responsive to
+# PID-only signals because the command runs in the background while the shell
+# waits interruptibly. Returns the command's exit status.
+run_fg() {
+  "$@" &
+  ACTIVE_CHILD=$!
+  set +e
+  wait "$ACTIVE_CHILD"
+  local rc=$?
+  set -e
+  ACTIVE_CHILD=0
+  return $rc
+}
 
 cleanup() {
   local trap_rc="${1:-0}"
@@ -170,8 +223,8 @@ cleanup() {
   exit 0
 }
 
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'on_int' INT
+trap 'on_term' TERM
 trap 'cleanup "$?"' EXIT
 
 # --- Filtered env (allowlisted, original preserved) ---
@@ -190,7 +243,7 @@ NEW_FLAGS=("--gpu" "A100")
 EXPECTED_SHA="${LEGALIR_COMMIT_SHA:-$(git rev-parse HEAD)}"
 echo "Running local provenance preflight for A100..."
 set +e
-"$PYTHON_BIN" scripts/colab/bootstrap.py --expected-sha "$EXPECTED_SHA"
+run_fg "$PYTHON_BIN" scripts/colab/bootstrap.py --expected-sha "$EXPECTED_SHA"
 preflight_rc=$?
 set -e
 if [ $preflight_rc -ne 0 ]; then
@@ -206,30 +259,36 @@ echo "LegalIR Google Colab CLI Automation"
 echo "  • Target Mode : $GPU_MODE"
 echo "  • Session     : $SESSION"
 echo "  • Notebook    : $NOTEBOOK"
-echo "  • Timeout     : ${TIMEOUT}s (execution wait, not a billing cap)"
+echo "  • Exec wall clock : ${TIMEOUT}s total (plus setup/cleanup; not a billing cap)"
 echo "================================================================="
 
 # Private notebook copy to avoid dirtying the repo.
 cp "$NOTEBOOK" "$TMP_NOTEBOOK"
 
-# 1. Allocate VM (track attempt before call for ambiguous-failure stop).
-echo "[1/4] Allocating Colab VM with ${NEW_FLAGS[*]}..."
+# 1. Allocate VM with an explicit local deadline (track attempt before call for
+# ambiguous-failure stop: a hang may mean server-side success).
+echo "[1/4] Allocating Colab VM with ${NEW_FLAGS[*]} (deadline ${NEW_TIMEOUT}s)..."
 ALLOC_ATTEMPTED=1
 set +e
-colab new -s "$SESSION" "${NEW_FLAGS[@]}"
+run_fg "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py "$NEW_TIMEOUT" colab new -s "$SESSION" "${NEW_FLAGS[@]}"
 new_rc=$?
 set -e
 if [ $new_rc -ne 0 ]; then
-  echo "[!] Colab allocation failed (rc=$new_rc) for session '$SESSION'." >&2
+  if [ $new_rc -eq 124 ]; then
+    echo "[!] Colab allocation timed out after ${NEW_TIMEOUT}s for session '$SESSION'." >&2
+  else
+    echo "[!] Colab allocation failed (rc=$new_rc) for session '$SESSION'." >&2
+  fi
   PRIMARY_RC=$new_rc
   exit "$PRIMARY_RC"
 fi
 
-# 2. Upload required inputs (failures block exec; no silent fallback).
+# 2. Upload required inputs with explicit deadlines (failures block exec; no
+# silent fallback).
 if [ -s "$FILTERED_ENV" ]; then
-  echo "[2/4] Uploading filtered local .env to /content/.env..."
+  echo "[2/4] Uploading filtered local .env to /content/.env (deadline ${UPLOAD_TIMEOUT}s)..."
   set +e
-  colab upload "$FILTERED_ENV" /content/.env -s "$SESSION"
+  run_fg "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py "$UPLOAD_TIMEOUT" colab upload "$FILTERED_ENV" /content/.env -s "$SESSION"
   up_rc=$?
   set -e
   if [ $up_rc -ne 0 ]; then
@@ -241,9 +300,9 @@ else
   echo "[!] Warning: No relevant secrets found in local .env. Secrets must be configured in Colab Secrets."
 fi
 
-echo "[2/4] Uploading launch config..."
+echo "[2/4] Uploading launch config (deadline ${UPLOAD_TIMEOUT}s)..."
 set +e
-colab upload "$LAUNCH_JSON" /content/legalir_launch.json -s "$SESSION"
+run_fg "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py "$UPLOAD_TIMEOUT" colab upload "$LAUNCH_JSON" /content/legalir_launch.json -s "$SESSION"
 up_rc=$?
 set -e
 if [ $up_rc -ne 0 ]; then
@@ -256,9 +315,9 @@ fi
 # upload is required (failure must not silently fall back to other evidence).
 for f in artifacts/task1/gates/kaggle_t4x2_report.json artifacts/task1/freeze/production_freeze.json; do
   if [ -f "$f" ]; then
-    echo "[2/4] Uploading $f..."
+    echo "[2/4] Uploading $f (deadline ${UPLOAD_TIMEOUT}s)..."
     set +e
-    colab upload "$f" "/content/$(basename "$f")" -s "$SESSION"
+    run_fg "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py "$UPLOAD_TIMEOUT" colab upload "$f" "/content/$(basename "$f")" -s "$SESSION"
     up_rc=$?
     set -e
     if [ $up_rc -ne 0 ]; then
@@ -269,15 +328,23 @@ for f in artifacts/task1/gates/kaggle_t4x2_report.json artifacts/task1/freeze/pr
   fi
 done
 
-# 3. Execute notebook (COLAB_TIMEOUT is execution wait, not a billing cap).
-echo "[3/4] Executing $NOTEBOOK on remote Colab VM (timeout ${TIMEOUT}s)..."
+# 3. Execute notebook. COLAB_TIMEOUT is BOTH the whole-notebook wall-clock bound
+# (outer helper, kills an overrunning client) and the per-cell bound passed to
+# `colab exec --timeout` (the CLI applies it separately to each cell). A slow
+# multi-cell notebook therefore trips the outer deadline even when every
+# individual cell is below it. Neither bound is a billing cap.
+echo "[3/4] Executing $NOTEBOOK on remote Colab VM (wall clock ${TIMEOUT}s)..."
 EXEC_ATTEMPTED=1
 set +e
-colab exec -s "$SESSION" -f "$TMP_NOTEBOOK" --timeout "$TIMEOUT"
+run_fg "$CLI_TIMEOUT_PYTHON" scripts/colab/cli_timeout.py "$TIMEOUT" colab exec -s "$SESSION" -f "$TMP_NOTEBOOK" --timeout "$TIMEOUT"
 EXEC_RC=$?
 set -e
 if [ $EXEC_RC -ne 0 ]; then
-  echo "[!] Remote notebook execution failed (exit code $EXEC_RC)." >&2
+  if [ $EXEC_RC -eq 124 ]; then
+    echo "[!] Remote notebook execution exceeded the ${TIMEOUT}s whole-notebook wall clock." >&2
+  else
+    echo "[!] Remote notebook execution failed (exit code $EXEC_RC)." >&2
+  fi
   PRIMARY_RC=$EXEC_RC
   exit "$PRIMARY_RC"
 fi

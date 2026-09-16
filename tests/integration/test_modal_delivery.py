@@ -341,6 +341,58 @@ def test_launcher_state_redaction(launcher, offline_stubs, monkeypatch):
     }
 
 
+def test_state_write_failure_cannot_mask_primary_or_skip_commit(launcher, offline_stubs, monkeypatch):
+    """Failure metadata is best-effort: an OSError while writing state must
+    neither replace the original pipeline error nor skip the final commit."""
+    calls, received = offline_stubs
+    import scripts.run_colab_train as wrapper
+
+    def failing_pipeline(**kwargs):
+        out = Path(kwargs["output_dir"])
+        received.update(kwargs)
+        received["commits_at_pipeline_entry"] = len(calls["commits"])
+        (out / "training.log").write_text("log\n", encoding="utf-8")
+        (out / "checkpoints/reranker_final/adapter_model.safetensors").parent.mkdir(parents=True, exist_ok=True)
+        (out / "checkpoints/reranker_final/adapter_model.safetensors").write_bytes(b"fixture-weights")
+        (out / "recovery.tar.gz").write_bytes(b"fixture-archive")
+        raise RuntimeError("primary boom")
+
+    monkeypatch.setattr(wrapper, "run_colab_production_training", failing_pipeline)
+
+    def broken_state(*a, **k):
+        raise OSError("state disk down")
+
+    monkeypatch.setattr(launcher, "_write_launcher_state", broken_state)
+    with pytest.raises(RuntimeError, match="primary boom"):
+        launcher.run_production_training(VALID_SHA)
+    # A commit was attempted AFTER the pipeline failure, not merely before it.
+    assert len(calls["commits"]) > received["commits_at_pipeline_entry"]
+
+
+def test_dataset_failure_gets_final_commit(launcher, offline_stubs, monkeypatch):
+    """Lifecycle-wide finalization: dataset-stage failures also attempt a
+    final commit and preserve the original error."""
+    calls, received = offline_stubs
+    import scripts.colab.bootstrap as boot
+
+    def failing_prepare(dataset_dir, freeze_file=None):
+        received["commits_at_dataset_entry"] = len(calls["commits"])
+        raise RuntimeError("dataset boom")
+
+    monkeypatch.setattr(boot, "prepare_dataset", failing_prepare)
+    with pytest.raises(RuntimeError, match="dataset boom"):
+        launcher.run_production_training(VALID_SHA)
+    assert len(calls["commits"]) > received["commits_at_dataset_entry"]
+    assert received == {"commits_at_dataset_entry": received["commits_at_dataset_entry"]}
+    volume_root = Path(launcher.VOLUME_MOUNT)
+    attempts = list((volume_root / VALID_SHA / "attempts").iterdir())
+    assert len(attempts) == 1
+    state = _read_state(attempts[0])
+    assert state["phase"] == "failed"
+    assert state["outcome"] == "failed"
+    assert state["exception_class"] == "RuntimeError"
+
+
 def test_create_attempt_dir_validates_sha(tmp_path):
     mod = _load_launcher()
     root = tmp_path / "v"

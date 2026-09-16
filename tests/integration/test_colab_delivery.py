@@ -374,6 +374,13 @@ def test_receipt_requires_valid_oid(tmp_path, monkeypatch):
     saved = json.loads((out_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert saved.get("status") != "RELEASED"
     assert "manifest_commit_sha" not in saved.get("huggingface", {})
+    # The structured artifact receipt is retained (not just files on disk).
+    hf = saved.get("huggingface", {})
+    assert hf.get("commit_sha") == "a" * 40
+    assert hf.get("repo_id") == "test-owner/model"
+    assert hf.get("path_in_repo") == f"runs/{saved['run_id']}"
+    assert hf.get("public_repo_override") is False
+    assert hf.get("uploaded") is True
 
 
 def test_receipt_missing_oid_blocks_release(tmp_path, monkeypatch):
@@ -394,6 +401,11 @@ def test_receipt_missing_oid_blocks_release(tmp_path, monkeypatch):
         )
     saved = json.loads((out_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert saved.get("status") != "RELEASED"
+    hf = saved.get("huggingface", {})
+    assert hf.get("commit_sha") == "a" * 40
+    assert hf.get("repo_id") == "test-owner/model"
+    assert hf.get("path_in_repo") == f"runs/{saved['run_id']}"
+    assert hf.get("uploaded") is True
 
 
 def test_receipt_upload_failure_keeps_artifacts(tmp_path, monkeypatch):
@@ -416,6 +428,15 @@ def test_receipt_upload_failure_keeps_artifacts(tmp_path, monkeypatch):
     assert (out_dir / "submission.zip").is_file()
     saved = json.loads((out_dir / "run_manifest.json").read_text(encoding="utf-8"))
     assert saved.get("status") != "RELEASED"
+    # Structured recovery metadata retains the artifact commit (reproduces the
+    # reported loss where saved huggingface was None).
+    hf = saved.get("huggingface")
+    assert isinstance(hf, dict), f"expected artifact receipt dict, got {hf!r}"
+    assert hf.get("commit_sha") == "a" * 40
+    assert hf.get("repo_id") == "test-owner/model"
+    assert hf.get("path_in_repo") == f"runs/{saved['run_id']}"
+    assert hf.get("public_repo_override") is False
+    assert hf.get("uploaded") is True
 
 
 def test_successful_release_receipt_consistency(tmp_path, monkeypatch):

@@ -49,9 +49,11 @@ CAP="{capture_dir}"
 echo "$@" >> "$LOG"
 cmd="$1"
 if [ "$cmd" = "new" ]; then
+  if [ -n "${{FAKE_NEW_SLEEP:-}}" ]; then sleep "$FAKE_NEW_SLEEP"; fi
   exit ${{FAKE_NEW_RC:-0}}
 fi
 if [ "$cmd" = "upload" ]; then
+  if [ -n "${{FAKE_UPLOAD_SLEEP:-}}" ]; then sleep "$FAKE_UPLOAD_SLEEP"; fi
   src="$2"
   # Capture filtered env content during upload, before cleanup removes it.
   # Only .env.filtered proves filtering; launch JSON and gate files must not
@@ -340,14 +342,14 @@ def test_colab_timeout_validation(tmp_path):
     assert "new" not in _log_text(log)
 
 
-def _run_wrapper_signal(tmp_path, sig):
+def _run_wrapper_signal(tmp_path, sig, stub_opts=None, pid_only=False):
     import os as _os
 
     repo = _make_fixture_repo(tmp_path)
     bin_dir = tmp_path / "bin"
     log = tmp_path / "colab.log"
     cap = tmp_path / "cap"
-    _write_stubs(bin_dir, log, cap, {"FAKE_EXEC_SLEEP": "10", "FAKE_EXEC_RC": "0"})
+    _write_stubs(bin_dir, log, cap, stub_opts or {"FAKE_EXEC_SLEEP": "10", "FAKE_EXEC_RC": "0"})
     env = _os.environ.copy()
     env["PATH"] = str(bin_dir) + ":" + env.get("PATH", "")
     env["PYTHON_BIN"] = str(bin_dir / "py_stub")
@@ -362,10 +364,13 @@ def _run_wrapper_signal(tmp_path, sig):
     )
     try:
         time.sleep(1.5)
-        # Send signal to the wrapper process group so child exec also sees it,
-        # but helper timeouts still bound downloads/stop.
+        # pid_only=True sends to the wrapper PID alone (supervisor/CI kill
+        # pattern); otherwise to the whole process group.
         try:
-            _os.killpg(proc.pid, sig)
+            if pid_only:
+                _os.kill(proc.pid, sig)
+            else:
+                _os.killpg(proc.pid, sig)
         except ProcessLookupError:
             pass
         try:
@@ -398,3 +403,83 @@ def test_sigterm_cleanup_once_143(tmp_path):
     assert rc == 143
     assert text.count("stop -s") == 1
     assert not (repo / ".env.filtered").exists()
+
+
+def test_sigterm_to_wrapper_pid_during_exec_reaches_cleanup(tmp_path):
+    rc, text, repo = _run_wrapper_signal(
+        tmp_path, signal.SIGTERM, {"FAKE_EXEC_SLEEP": "20", "FAKE_EXEC_RC": "0"}, pid_only=True,
+    )
+    assert rc == 143
+    assert text.count("stop -s") == 1
+    assert not (repo / ".env.filtered").exists()
+
+
+def test_sigint_to_wrapper_pid_during_allocation_reaches_cleanup(tmp_path):
+    rc, text, repo = _run_wrapper_signal(
+        tmp_path, signal.SIGINT, {"FAKE_NEW_SLEEP": "20"}, pid_only=True,
+    )
+    assert rc == 130
+    assert text.count("stop -s") == 1
+
+
+def test_sigterm_to_wrapper_pid_during_upload_reaches_cleanup(tmp_path):
+    rc, text, repo = _run_wrapper_signal(
+        tmp_path, signal.SIGTERM, {"FAKE_UPLOAD_SLEEP": "20"}, pid_only=True,
+    )
+    assert rc == 143
+    assert text.count("stop -s") == 1
+
+
+def test_allocation_hang_reaches_bounded_stop_once(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {"FAKE_NEW_SLEEP": "30"})
+    res = _run_wrapper(repo, bin_dir, extra_env={"COLAB_NEW_TIMEOUT": "2"})
+    assert res.returncode == 124
+    text = _log_text(log)
+    assert "new" in text
+    assert "exec" not in text
+    assert text.count("stop -s") == 1
+
+
+def test_upload_hang_reaches_bounded_stop_once(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {"FAKE_UPLOAD_SLEEP": "30"})
+    res = _run_wrapper(repo, bin_dir, extra_env={"COLAB_UPLOAD_TIMEOUT": "2"})
+    assert res.returncode == 124
+    text = _log_text(log)
+    assert "upload" in text
+    assert "exec" not in text
+    assert text.count("stop -s") == 1
+
+
+def test_whole_notebook_wall_clock_bounds_slow_cells(tmp_path):
+    # Fake exec ignores the per-cell --timeout flag and sleeps past the total
+    # wall clock: the outer deadline must still fire.
+    repo = _make_fixture_repo(tmp_path)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {"FAKE_EXEC_SLEEP": "30", "FAKE_EXEC_RC": "0"})
+    res = _run_wrapper(repo, bin_dir, extra_env={"COLAB_TIMEOUT": "3"})
+    assert res.returncode == 124
+    assert "stop -s" in _log_text(log)
+
+
+def test_new_and_upload_timeout_validation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper(repo, bin_dir, extra_env={"COLAB_NEW_TIMEOUT": "0"})
+    assert res.returncode == 2
+    assert "new" not in _log_text(log)
+    res = _run_wrapper(repo, bin_dir, extra_env={"COLAB_UPLOAD_TIMEOUT": "nan"})
+    assert res.returncode == 2
+    assert "new" not in _log_text(log)

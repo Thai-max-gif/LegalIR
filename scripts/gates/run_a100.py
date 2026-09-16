@@ -545,6 +545,12 @@ def run_a100_production_gate(
             "uploaded": True,
             "public_repo_override": bool(hf_allow_public_repo),
         }
+        # Persist the non-RELEASED manifest carrying the artifact commit BEFORE
+        # attempting the second (receipt) upload, so a receipt failure cannot
+        # lose the structured upload-receipt metadata. Adapter files remain
+        # regardless; this preserves the commit SHA, repository, run path, and
+        # consent value for recovery.
+        run_manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         # A manifest cannot contain its own commit SHA. It references the immutable
         # artifact commit; the local receipt also records the manifest commit.
         final_manifest = {**manifest, "status": "RELEASED"}

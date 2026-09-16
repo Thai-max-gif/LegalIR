@@ -96,7 +96,11 @@ scripts/modal/run_modal_cli.sh --hf-allow-public-repo
 ./scripts/colab/run_colab_cli.sh A100
 ```
 This script automatically:
-1. Validates mode/tools/`COLAB_TIMEOUT` (default 18000s = 5h wait, not a billing cap).
+1. Validates mode/tools/deadlines (`COLAB_TIMEOUT` default 18000s = 5h
+   whole-notebook wall clock, enforced externally; the same value is also
+   passed per-cell to `colab exec --timeout`, which alone cannot bound a
+   multi-cell notebook. Setup and bounded-cleanup time are separate. None of
+   these is a billing cap).
 2. Runs local provenance preflight before allocation.
 3. Provisions a unique A100 session (`colab new -s legalir-a100-production-<rand> --gpu A100`).
 4. Uploads allowlisted `.env`, required launch JSON, and gate/freeze overrides
@@ -116,19 +120,28 @@ Retired: `./scripts/run_colab_cli.sh T4` and any 4-hour/11.1h wording. The old
 `COLAB_TIMEOUT=40000s` (11.1h) exceeded typical VM lifetime and is replaced by
 the 5h default. No promise that FULL fits 5h.
 
-#### Option C: Manual Web Interface (Colab)
-1. **Open Notebook on Google Colab**:
-   - Open `notebooks/colab_a100_train.ipynb` (generated; do not hand-edit).
-2. **Select Runtime**:
+#### Option C: Manual Web Interface (Colab, explicit release required)
+1. **Find the evidence-bearing release commit**:
+   - Use the latest `chore(release): evidence bundle for runtime …` commit whose
+     `python scripts/verify_release_approval.py --repo-root .` passes strict
+     verification (CPU-only). Call it `S`. The notebook baked into `S` pins its
+     runtime `R` by design — embedding `S` there would be self-referential — so
+     you must select `S` explicitly at launch; the default pin alone checks out
+     stale evidence and fails strict bootstrap after GPU allocation and installs.
+2. **Open Notebook on Google Colab**:
+   - Open `notebooks/colab_a100_train.ipynb` from commit `S` (generated; do not hand-edit).
+3. **Select Runtime**:
    - Runtime $\rightarrow$ Change runtime type $\rightarrow$ **NVIDIA A100 GPU** (High-RAM).
-3. **Configure Secrets**:
+4. **Configure Secrets**:
    - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN_WRITE` (or `HF_TOKEN`)
      with write access to `HF_REPO_ID` (defaults to `dangphuc2109/legalir-task1-reranker`),
      plus Kaggle vars and optionally `HF_ALLOW_PUBLIC_REPO=1` for explicit public
-     opt-in (Secrets win over uploaded `.env`). The gate verifies access
-     before training and fails fast on rejected tokens; unknown visibility blocks.
-4. **Click "Run All"**:
+     opt-in (Secrets win over uploaded `.env`). **Also add `LEGALIR_COMMIT_SHA`
+     set to the full 40-character SHA of `S`.** Without it the notebook refuses
+     to check out anything (fail fast, before installs) instead of silently
+     using the stale runtime pin.
+5. **Click "Run All"**:
    - Verifies A100 before training (runtime already allocated at this point) and
-     confirms the Kaggle T4x2 gate passed.
+     confirms the Kaggle T4x2 gate passed for the selected release.
    - Executes FULL training as above, validates submission, publishes artifacts
      with immutable receipts, and finalizes recovery.
