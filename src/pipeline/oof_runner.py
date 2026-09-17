@@ -253,7 +253,16 @@ class OOFRunner:
     def _build_question_memory(self, **kwargs: Any) -> TrainQuestionMemory:
         """Build fold-local memory while reusing one dense encoder when no index exists."""
         dense_encoder = self.dense
-        if dense_encoder is None and (self.train_query_embeddings or self.dense_device is not None):
+        has_dense = self.dense is not None or bool(self.train_query_embeddings)
+        if not has_dense:
+            return TrainQuestionMemory(
+                dense_encoder=None,
+                use_dense=False,
+                dense_device=self.dense_device,
+                **kwargs,
+            )
+
+        if dense_encoder is None:
             if self._shared_memory_dense_encoder is None:
                 self._shared_memory_dense_encoder = DenseMacroRetriever(
                     model_name="mock" if self.smoke else DEFAULT_MODEL_NAME,
@@ -262,7 +271,12 @@ class OOFRunner:
                     device=self.dense_device or "cpu",
                 )
             dense_encoder = self._shared_memory_dense_encoder
-        return TrainQuestionMemory(dense_encoder=dense_encoder, **kwargs)
+        return TrainQuestionMemory(
+            dense_encoder=dense_encoder,
+            use_dense=True,
+            dense_device=self.dense_device,
+            **kwargs,
+        )
 
     def precompute_train_query_embeddings(self) -> dict[str, np.ndarray]:
         """Precompute normalized dense query embeddings once on GPU 0 and index by query_id."""
