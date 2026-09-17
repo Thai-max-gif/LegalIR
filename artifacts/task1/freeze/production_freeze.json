@@ -20,7 +20,7 @@
   },
   "gates": {
     "kaggle_t4x2": {
-      "report_sha256": "de0445a17332d246d32878d74fcdbbb33cae3d719cfb8600f7376b9a2b0f573c",
+      "report_sha256": "27f788672b23d0f77346e5c5419f976a981c8dab08f495d4a87af8ebf53e2441",
       "verdict": "PASS"
     }
   },

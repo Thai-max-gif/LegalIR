@@ -8,23 +8,23 @@
     "Tesla T4",
     "Tesla T4"
   ],
-  "elapsed_seconds": 30.6,
-  "final_loss": 4.947309494018555,
+  "elapsed_seconds": 27.05,
+  "final_loss": 4.829158782958984,
   "git_sha": "373e8791917915da36864b7eb9b2f457493b4a0e",
   "gpu_count": 2,
-  "initial_loss": 5.370148181915283,
+  "initial_loss": 5.3066864013671875,
   "model_fallback_used": false,
   "optimizer_steps": 3,
   "real_models_only": true,
   "reranker_device": "cuda:1",
   "runtime_profile_sha256": "bd78d178c3c610dfef84155c001cdf1cebc14bbf8ad4c4bf271be8f8216e56fc",
   "smoke_metrics": {
-    "final_loss": 4.947309494018555,
-    "initial_loss": 5.370148181915283,
+    "final_loss": 4.829158782958984,
+    "initial_loss": 5.3066864013671875,
     "sample_queries": 50,
-    "weight_delta": 275.9863465083763
+    "weight_delta": 264.63793107215315
   },
   "stage": "KAGGLE_T4X2",
   "verdict": "PASS",
-  "weight_delta": 275.9863465083763
+  "weight_delta": 264.63793107215315
 }
