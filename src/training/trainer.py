@@ -128,16 +128,16 @@ def audit_pair_coverage(
 
 
 class QueryBalancedSampler(Sampler[int]):
-    """Deterministic query-aware sampler guaranteeing that every eligible query's positive (Phase A)
-
-    and hard-negative (Phase B) pairs are scheduled before secondary repeats (Phase C).
+    """Deterministic query-aware sampler guaranteeing that every eligible query's positive
+    and hard-negative pairs are scheduled with interleaved 50/50 balance before secondary repeats.
     Survives DataLoader iteration without shuffle=True interference.
     """
 
-    def __init__(self, dataset: Dataset, seed: int = 42):
+    def __init__(self, dataset: Dataset, seed: int = 42, interleave: bool = True):
         self.dataset = dataset
         self.seed = seed
         self.epoch = 0
+        self.interleave = bool(interleave)
 
         # Extract records from dataset
         if hasattr(dataset, "records"):
@@ -190,15 +190,22 @@ class QueryBalancedSampler(Sampler[int]):
 
         ordered_indices: list[int] = []
 
-        # Phase A: 1 positive for every eligible query
-        for q in eligible_sorted:
-            if pos_map[q]:
-                ordered_indices.append(pos_map[q].pop(0))
+        if self.interleave:
+            # Deterministic interleaved mode: for each eligible query, emit 1 positive then 1 negative
+            for q in eligible_sorted:
+                if pos_map[q]:
+                    ordered_indices.append(pos_map[q].pop(0))
+                if neg_map[q]:
+                    ordered_indices.append(neg_map[q].pop(0))
+        else:
+            # Legacy class-blocked mode (Phase A all positives, Phase B all negatives)
+            for q in eligible_sorted:
+                if pos_map[q]:
+                    ordered_indices.append(pos_map[q].pop(0))
 
-        # Phase B: 1 negative for every eligible query
-        for q in eligible_sorted:
-            if neg_map[q]:
-                ordered_indices.append(neg_map[q].pop(0))
+            for q in eligible_sorted:
+                if neg_map[q]:
+                    ordered_indices.append(neg_map[q].pop(0))
 
         # Non-eligible query rows (e.g. positive-only or negative-only queries)
         for q in other_sorted:
@@ -220,6 +227,9 @@ class QueryBalancedSampler(Sampler[int]):
                     has_more = True
 
         return iter(ordered_indices)
+
+
+QueryBalancedPairSampler = QueryBalancedSampler
 
 
 class QueryBalancedGroupSampler(Sampler[int]):
@@ -622,7 +632,8 @@ class RerankerTrainer:
         else:
             self.train_dataset = RerankerPairDataset(train_data, balanced=False)
             self.train_collator = RerankerPairCollator(self.tokenizer, max_length=self.max_length)
-            self.train_sampler = QueryBalancedSampler(self.train_dataset, seed=42)
+            interleave_samples = bool(self.config.get("interleave_samples", True))
+            self.train_sampler = QueryBalancedSampler(self.train_dataset, seed=42, interleave=interleave_samples)
             self.train_loader = DataLoader(
                 self.train_dataset,
                 batch_size=self.batch_size,

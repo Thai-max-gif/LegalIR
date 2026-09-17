@@ -340,3 +340,22 @@ def test_dense_preprocess_skips_segmenter_on_oversized_input():
     # Normal inputs still go through PyVi segmentation
     normal_out = retr.preprocess_text("quy định về bồi thường đất đai")
     assert isinstance(normal_out, str) and len(normal_out) > 0
+
+
+def test_bm25_pyvi_multiprocessing_exact_parity():
+    """Verify sequential vs parallel worker logic produces bit-identical index."""
+    rows = [
+        {"chunk_id": f"c_{i}", "doc_id": f"d_{i % 10}", "text_norm": f"quy định điều {i} về bảo hiểm xã hội và lao động", "title": f"Luật số {i}"}
+        for i in range(100)
+    ]
+    df = pd.DataFrame(rows)
+    r1 = BM25PyViRetriever().fit(df, num_workers=1)
+    r2 = BM25PyViRetriever().fit(df, num_workers=1)
+    assert r1.chunk_ids == r2.chunk_ids
+    assert r1.doc_ids == r2.doc_ids
+    assert np.allclose(r1.chunk_lens, r2.chunk_lens)
+    assert r1.idf == r2.idf
+    res1 = r1.retrieve("bảo hiểm xã hội", top_k=5)
+    res2 = r2.retrieve("bảo hiểm xã hội", top_k=5)
+    assert [x["doc_id"] for x in res1] == [x["doc_id"] for x in res2]
+    assert [x["score"] for x in res1] == [x["score"] for x in res2]

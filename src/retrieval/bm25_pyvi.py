@@ -3,6 +3,7 @@
 from collections import Counter, defaultdict
 import functools
 import math
+import os
 from pathlib import Path
 import pickle
 import re
@@ -68,6 +69,61 @@ def _normalize_str(val: Any) -> str:
     return unicodedata.normalize("NFC", str(val)).strip()
 
 
+def _extract_and_tokenize_doc(
+    body_text: str,
+    legal_num: str,
+    title: str,
+    article: str,
+    clause: str,
+    slug: str,
+    w_body: int,
+    w_legal: int,
+    w_title: int,
+    w_art: int,
+    w_clause: int,
+    w_slug: int,
+) -> tuple[int, dict[str, int]]:
+    weighted_tokens: list[str] = []
+
+    if body_text:
+        b_toks = _tokenize_pyvi_cached(body_text)
+        if b_toks:
+            weighted_tokens.extend(b_toks if w_body == 1 else b_toks * w_body)
+
+    if legal_num:
+        ln_toks = _tokenize_pyvi_cached(legal_num)
+        if ln_toks:
+            weighted_tokens.extend(ln_toks if w_legal == 1 else ln_toks * w_legal)
+
+    if title:
+        ti_toks = _tokenize_pyvi_cached(title)
+        if ti_toks:
+            weighted_tokens.extend(ti_toks if w_title == 1 else ti_toks * w_title)
+
+    if article:
+        ar_toks = _tokenize_pyvi_cached(article)
+        if ar_toks:
+            weighted_tokens.extend(ar_toks if w_art == 1 else ar_toks * w_art)
+
+    if clause:
+        cl_toks = _tokenize_pyvi_cached(clause)
+        if cl_toks:
+            weighted_tokens.extend(cl_toks if w_clause == 1 else cl_toks * w_clause)
+
+    if slug:
+        sl_toks = _tokenize_pyvi_cached(slug)
+        if sl_toks:
+            weighted_tokens.extend(sl_toks if w_slug == 1 else sl_toks * w_slug)
+
+    return len(weighted_tokens), dict(Counter(weighted_tokens))
+
+
+def _tokenize_doc_batch_worker(
+    batch: list[tuple[str, str, str, str, str, str, int, int, int, int, int, int]]
+) -> list[tuple[int, dict[str, int]]]:
+    return [_extract_and_tokenize_doc(*item) for item in batch]
+
+
 class BM25PyViRetriever:
     """Branch B: Lexical BM25 retriever indexed with PyVi word segmentation."""
 
@@ -99,7 +155,7 @@ class BM25PyViRetriever:
         """Backward-compatibility property returning indexed chunk IDs."""
         return self.chunk_ids
 
-    def fit(self, chunks: Any, show_progress: bool = False) -> "BM25PyViRetriever":
+    def fit(self, chunks: Any, show_progress: bool = False, num_workers: int | None = None) -> "BM25PyViRetriever":
         """Fit BM25 index on micro chunks using PyVi tokenization."""
         if isinstance(chunks, pd.DataFrame):
             n_rows = len(chunks)
@@ -158,18 +214,27 @@ class BM25PyViRetriever:
         w_clause = int(self.field_weights.get("clause", 1.0))
         w_slug = int(self.field_weights.get("url_slug", 1.0))
 
-        t_start = time.time()
-        last_log = t_start
-
-        iterator = range(N) if is_df else enumerate(records)
-        if show_progress:
-            iterator = tqdm(iterator, total=N, desc="Indexing PyVi BM25 chunks")
-
-        for idx_entry in iterator:
-            idx = idx_entry if is_df else idx_entry[0]
-
-            if not is_df:
-                c = idx_entry[1]
+        items: list[tuple[str, str, str, str, str, str, int, int, int, int, int, int]] = []
+        if is_df:
+            for idx in range(N):
+                l_str = links[idx]
+                slug_str = l_str.rstrip("/").split("/")[-1].replace("-", " ") if l_str else ""
+                items.append((
+                    _normalize_str(bodies[idx]),
+                    _normalize_str(legal_nums[idx]),
+                    _normalize_str(titles[idx]),
+                    _normalize_str(articles[idx]),
+                    _normalize_str(clauses[idx]),
+                    _normalize_str(slug_str),
+                    w_body,
+                    w_legal,
+                    w_title,
+                    w_art,
+                    w_clause,
+                    w_slug,
+                ))
+        else:
+            for idx, c in enumerate(records):
                 cid_val = c.get("chunk_id")
                 cid = str(cid_val) if cid_val is not None and not pd.isna(cid_val) and str(cid_val) != "" else str(idx)
                 did_val = c.get("doc_id")
@@ -188,68 +253,76 @@ class BM25PyViRetriever:
                 article = _normalize_str(c.get("article", ""))
                 clause = _normalize_str(c.get("clause", ""))
                 link = _normalize_str(c.get("link", ""))
+                slug_str = link.rstrip("/").split("/")[-1].replace("-", " ") if link else ""
+                items.append((
+                    body_text,
+                    legal_num,
+                    title,
+                    article,
+                    clause,
+                    _normalize_str(slug_str),
+                    w_body,
+                    w_legal,
+                    w_title,
+                    w_art,
+                    w_clause,
+                    w_slug,
+                ))
+
+        t_start = time.time()
+        last_log = t_start
+
+        # Resolve workers: check override or default to multiprocessing for large corpora
+        resolved_workers = num_workers
+        if resolved_workers is None:
+            env_w = os.environ.get("PYVI_NUM_WORKERS")
+            if env_w:
+                try:
+                    resolved_workers = int(env_w)
+                except ValueError:
+                    resolved_workers = 1
             else:
-                body_text = _normalize_str(bodies[idx])
-                legal_num = _normalize_str(legal_nums[idx])
-                title = _normalize_str(titles[idx])
-                article = _normalize_str(articles[idx])
-                clause = _normalize_str(clauses[idx])
-                link = _normalize_str(links[idx])
+                resolved_workers = min(4, max(1, (os.cpu_count() or 1) - 1)) if N >= 5000 else 1
 
-            weighted_tokens: list[str] = []
+        if resolved_workers > 1 and N >= 5000:
+            import concurrent.futures
+            batch_size = 2000
+            batches = [items[i : i + batch_size] for i in range(0, N, batch_size)]
+            print(f"[*] Extracting and tokenizing {N:,} PyVi chunks across {resolved_workers} worker processes...")
+            curr_idx = 0
+            with concurrent.futures.ProcessPoolExecutor(max_workers=resolved_workers) as executor:
+                for b_res in executor.map(_tokenize_doc_batch_worker, batches):
+                    for doc_len, tf in b_res:
+                        lens[curr_idx] = doc_len
+                        for term, freq in tf.items():
+                            term_df[term] += 1
+                            term_docs[term].append(curr_idx)
+                            term_freqs[term].append(freq)
+                        curr_idx += 1
+        else:
+            iterator = range(N)
+            if show_progress:
+                iterator = tqdm(iterator, total=N, desc="Indexing PyVi BM25 chunks")
+            for idx in iterator:
+                doc_len, tf = _extract_and_tokenize_doc(*items[idx])
+                lens[idx] = doc_len
+                for term, freq in tf.items():
+                    term_df[term] += 1
+                    term_docs[term].append(idx)
+                    term_freqs[term].append(freq)
 
-            if body_text:
-                b_toks = _tokenize_pyvi_cached(body_text)
-                if b_toks:
-                    weighted_tokens.extend(b_toks if w_body == 1 else b_toks * w_body)
-
-            if legal_num:
-                ln_toks = _tokenize_pyvi_cached(legal_num)
-                if ln_toks:
-                    weighted_tokens.extend(ln_toks if w_legal == 1 else ln_toks * w_legal)
-
-            if title:
-                ti_toks = _tokenize_pyvi_cached(title)
-                if ti_toks:
-                    weighted_tokens.extend(ti_toks if w_title == 1 else ti_toks * w_title)
-
-            if article:
-                ar_toks = _tokenize_pyvi_cached(article)
-                if ar_toks:
-                    weighted_tokens.extend(ar_toks if w_art == 1 else ar_toks * w_art)
-
-            if clause:
-                cl_toks = _tokenize_pyvi_cached(clause)
-                if cl_toks:
-                    weighted_tokens.extend(cl_toks if w_clause == 1 else cl_toks * w_clause)
-
-            if link:
-                slug = link.rstrip("/").split("/")[-1].replace("-", " ")
-                sl_toks = _tokenize_pyvi_cached(_normalize_str(slug))
-                if sl_toks:
-                    weighted_tokens.extend(sl_toks if w_slug == 1 else sl_toks * w_slug)
-
-            doc_len = len(weighted_tokens)
-            lens[idx] = doc_len
-
-            tf = Counter(weighted_tokens)
-            for term, freq in tf.items():
-                term_df[term] += 1
-                term_docs[term].append(idx)
-                term_freqs[term].append(freq)
-
-            now = time.time()
-            if (now - last_log) >= 30.0:
-                elapsed = now - t_start
-                pct = (idx + 1) / max(1, N) * 100.0
-                rate = (idx + 1) / max(0.001, elapsed)
-                eta = (N - idx - 1) / max(0.001, rate)
-                print(
-                    f"[*] PyVi BM25 indexing: {idx + 1:,}/{N:,} chunks ({pct:.1f}%) | "
-                    f"rate: {rate:.1f} chunks/s | elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s",
-                    flush=True,
-                )
-                last_log = now
+                now = time.time()
+                if (now - last_log) >= 30.0:
+                    elapsed = now - t_start
+                    pct = (idx + 1) / max(1, N) * 100.0
+                    rate = (idx + 1) / max(0.001, elapsed)
+                    eta = (N - idx - 1) / max(0.001, rate)
+                    print(
+                        f"[*] PyVi BM25 indexing: {idx + 1:,}/{N:,} chunks ({pct:.1f}%) | "
+                        f"rate: {rate:.1f} chunks/s | elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s",
+                        flush=True,
+                    )
+                    last_log = now
 
         self.chunk_lens = lens
         self.avg_len = float(np.mean(self.chunk_lens)) if N > 0 else 1.0

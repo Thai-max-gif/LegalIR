@@ -26,6 +26,9 @@ class LegalIRPipeline:
         fallback_doc_ids: list[str] | None = None,
         valid_doc_ids: Iterable[str] | None = None,
         doc_freq_map: Any | None = None,
+        reranker_batch_size: int = 16,
+        reranker_max_length: int = 384,
+        precision: str | None = None,
         *,
         retriever: Any | None = None,
     ):
@@ -40,6 +43,9 @@ class LegalIRPipeline:
         self.candidate_k = int(candidate_k)
         self.rerank_k = int(rerank_k)
         self.doc_freq_map = dict(doc_freq_map) if doc_freq_map is not None else {}
+        self.reranker_batch_size = max(1, int(reranker_batch_size))
+        self.reranker_max_length = max(1, int(reranker_max_length))
+        self.precision = str(precision).lower().strip() if precision else None
         self.valid_doc_ids = (
             {str(doc_id) for doc_id in valid_doc_ids}
             if valid_doc_ids is not None
@@ -163,6 +169,8 @@ class LegalIRPipeline:
                     candidates=candidates,
                     evidence_builder=self.evidence_builder,
                     top_k=self.rerank_k,
+                    batch_size=getattr(self, "reranker_batch_size", None),
+                    max_length=getattr(self, "reranker_max_length", None),
                 )
             elif hasattr(self.reranker, "rerank_documents"):
                 candidates = self.reranker.rerank_documents(
@@ -269,8 +277,9 @@ class LegalIRPipeline:
         queries: dict[str, str] | list[dict[str, Any]],
         query_embeddings: Any | None = None,
         show_progress: bool = False,
+        window_size: int | None = None,
     ) -> dict[str, dict[str, list[str]]]:
-        """Return ``{query_id: {"answer": [document_id, ...]}}``."""
+        """Return ``{query_id: {"answer": [document_id, ...]}}`` using batched windowed reranking."""
         if isinstance(queries, list):
             query_map = {}
             for item in queries:
@@ -282,7 +291,7 @@ class LegalIRPipeline:
             query_dict = queries
 
         results: dict[str, dict[str, list[str]]] = {}
-        iterator = sorted(
+        sorted_items = sorted(
             query_dict.items(),
             key=lambda item: (
                 0,
@@ -291,14 +300,103 @@ class LegalIRPipeline:
             if str(item[0]).isdigit()
             else (1, str(item[0])),
         )
+
+        w_size = window_size or min(32, max(1, getattr(self, "reranker_batch_size", 16)))
+        batches = [sorted_items[i : i + w_size] for i in range(0, len(sorted_items), w_size)]
+
+        iterator = batches
         if show_progress:
             iterator = tqdm(iterator, desc="Generating predictions")
 
-        for query_id, question in iterator:
-            qid_str = str(query_id)
-            q_emb = query_embeddings.get(qid_str) if query_embeddings is not None else None
-            answer = self.predict_one(qid_str, question, q_emb=q_emb)
-            results[qid_str] = {"answer": answer}
+        for batch in iterator:
+            batch_candidates: list[tuple[str, str, list[CandidateRecord]]] = []
+            for query_id, question in batch:
+                qid_str = str(query_id)
+                q_emb = query_embeddings.get(qid_str) if query_embeddings is not None else None
+                if hasattr(self.hybrid_engine, "search_candidates"):
+                    try:
+                        cands = self.hybrid_engine.search_candidates(
+                            query=question,
+                            top_k=self.candidate_k,
+                            exclude_qid=qid_str,
+                            q_emb=q_emb,
+                        )
+                    except TypeError:
+                        cands = self.hybrid_engine.search_candidates(query=question, top_k=self.candidate_k)
+                elif hasattr(self.hybrid_engine, "retrieve_candidates"):
+                    try:
+                        cands = self.hybrid_engine.retrieve_candidates(
+                            query=question,
+                            top_k=self.candidate_k,
+                            exclude_qid=qid_str,
+                            q_emb=q_emb,
+                        )
+                    except TypeError:
+                        cands = self.hybrid_engine.retrieve_candidates(query=question, top_k=self.candidate_k)
+                elif hasattr(self.hybrid_engine, "search"):
+                    try:
+                        cands = self.hybrid_engine.search(
+                            query=question,
+                            top_k_candidates=self.candidate_k,
+                            exclude_qid=qid_str,
+                            q_emb=q_emb,
+                        )
+                    except TypeError:
+                        cands = self.hybrid_engine.search(query=question, top_k_candidates=self.candidate_k)
+                else:
+                    cands = []
+                batch_candidates.append((qid_str, question, cands))
+
+            if self.reranker is not None and hasattr(self.reranker, "rerank_batch"):
+                q_cands_for_rerank = [(item[1], item[2]) for item in batch_candidates]
+                reranked_list = self.reranker.rerank_batch(
+                    q_cands_for_rerank,
+                    evidence_builder=self.evidence_builder,
+                    top_k=self.rerank_k,
+                    batch_size=getattr(self, "reranker_batch_size", None),
+                    max_length=getattr(self, "reranker_max_length", None),
+                )
+            elif self.reranker is not None:
+                reranked_list = []
+                for _, q_text, cands in batch_candidates:
+                    if hasattr(self.reranker, "rerank"):
+                        reranked_list.append(self.reranker.rerank(
+                            query=q_text,
+                            candidates=cands,
+                            evidence_builder=self.evidence_builder,
+                            top_k=self.rerank_k,
+                            batch_size=getattr(self, "reranker_batch_size", None),
+                            max_length=getattr(self, "reranker_max_length", None),
+                        ))
+                    elif hasattr(self.reranker, "rerank_documents"):
+                        reranked_list.append(self.reranker.rerank_documents(query=q_text, candidates=cands, top_k=self.rerank_k))
+                    else:
+                        reranked_list.append(cands)
+            else:
+                reranked_list = [item[2] for item in batch_candidates]
+
+            for (qid_str, question, _), cands in zip(batch_candidates, reranked_list):
+                if not cands:
+                    results[qid_str] = {"answer": self._fallback_answer()}
+                    continue
+
+                if hasattr(self.ranker, "predict"):
+                    ranked = self.ranker.predict(
+                        cands,
+                        query_id=qid_str,
+                        query_text=question,
+                        doc_freq_map=self.doc_freq_map,
+                    )
+                elif hasattr(self.ranker, "rank_candidates"):
+                    ranked = self.ranker.rank_candidates(cands)
+                else:
+                    ranked = cands
+
+                try:
+                    selected = self.selector.select(ranked, valid_doc_ids=self.valid_doc_ids, fill_to_k=5)
+                except TypeError:
+                    selected = self.selector.select(ranked, valid_doc_ids=self.valid_doc_ids)
+                results[qid_str] = {"answer": self._sanitize_answer(selected, fill_to_k=5)}
 
         return results
 
@@ -318,6 +416,9 @@ class LegalIRPipeline:
         audit_output_json: str | Path | None = None,
         reranker_model_name: str = "BAAI/bge-reranker-v2-m3",
         strict_artifacts: bool = False,
+        reranker_batch_size: int = 16,
+        reranker_max_length: int = 384,
+        precision: str | None = None,
     ) -> "LegalIRPipeline":
         """Load fully instantiated pipeline from index and data artifacts."""
         import json
@@ -497,6 +598,9 @@ class LegalIRPipeline:
                 model_name=reranker_model_name,
                 adapter_path=reranker_adapter_path,
                 device=resolved_reranker_device,
+                batch_size=reranker_batch_size,
+                max_length=reranker_max_length,
+                precision=precision,
             )
         else:
             reranker = None
@@ -553,6 +657,9 @@ class LegalIRPipeline:
             selector=selector,
             valid_doc_ids=valid_doc_ids,
             doc_freq_map=doc_freq_map,
+            reranker_batch_size=reranker_batch_size,
+            reranker_max_length=reranker_max_length,
+            precision=precision,
         )
 
         if audit_preflight or audit_output_json is not None:

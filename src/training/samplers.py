@@ -83,41 +83,51 @@ def probe_factorization_step(
 
     mb = factorization.microbatch_size
     ga = factorization.gradient_accumulation_steps
+    eff = factorization.effective_batch_size
 
-    # Prepare batch of size mb
-    batch_data = sample_pairs[:mb]
-    if len(batch_data) < mb:
-        # Repeat to match required microbatch size
-        batch_data = (batch_data * (mb // max(1, len(batch_data)) + 1))[:mb]
-
-    queries = [str(p[0]) for p in batch_data]
-    passages = [str(p[1]) for p in batch_data]
-    labels = torch.tensor([float(p[2]) for p in batch_data], dtype=torch.float32, device=dev).unsqueeze(1)
+    # Prepare full effective batch of size mb * ga
+    full_pairs = list(sample_pairs)
+    if len(full_pairs) < eff:
+        full_pairs = (full_pairs * (eff // max(1, len(full_pairs)) + 1))[:eff]
+    else:
+        full_pairs = full_pairs[:eff]
 
     t0 = time.perf_counter()
 
     # Capture initial weights for param diff verification
     initial_weights = [p.clone().detach() for p in model.parameters() if p.requires_grad]
 
-    encoded = tokenizer(
-        queries,
-        passages,
-        max_length=max_length,
-        padding="max_length",
-        truncation=True,
-        return_tensors="pt",
-    )
-    encoded = {k: v.to(dev) for k, v in encoded.items()}
-
     optimizer.zero_grad()
-    outputs = model(**encoded)
-    logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-    loss = criterion(logits, labels)
+    total_loss = 0.0
 
-    # Perform real backward step
-    loss.backward()
+    # Execute all gradient accumulation microbatches
+    for acc_idx in range(ga):
+        batch_slice = full_pairs[acc_idx * mb : (acc_idx + 1) * mb]
+        queries = [str(p[0]) for p in batch_slice]
+        passages = [str(p[1]) for p in batch_slice]
+        labels = torch.tensor([float(p[2]) for p in batch_slice], dtype=torch.float32, device=dev).unsqueeze(1)
 
-    # Optimizer step
+        encoded = tokenizer(
+            queries,
+            passages,
+            max_length=max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        encoded = {k: v.to(dev) for k, v in encoded.items()}
+
+        outputs = model(**encoded)
+        logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+        loss = criterion(logits, labels)
+        scaled_loss = loss / ga
+        scaled_loss.backward()
+        total_loss += float(loss.item())
+
+    # Gradient clipping as in production training
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+    # Optimizer step after complete accumulation
     optimizer.step()
     step_duration = time.perf_counter() - t0
 
@@ -136,7 +146,7 @@ def probe_factorization_step(
         "status": "PASS",
         "factorization": factorization.to_dict(),
         "effective_batch_size": factorization.effective_batch_size,
-        "loss": float(loss.item()),
+        "loss": float(total_loss / max(1, ga)),
         "param_diff": float(param_diff),
         "seconds_per_step": float(step_duration),
         "peak_vram_bytes": peak_vram,

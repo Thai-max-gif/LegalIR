@@ -71,3 +71,38 @@ def test_split_generators():
     train_docs = set(r["doc_id"] for r in qrels if r["query_id"] in train_q)
     val_docs = set(r["doc_id"] for r in qrels if r["query_id"] in val_q)
     assert len(train_docs & val_docs) == 0
+
+
+def test_compute_top5_oracle():
+    from src.evaluation.evaluator import compute_top5_oracle
+
+    # Case 1: Query with 6 gold documents (corpus ceiling = 5/6 = ~0.8333)
+    # and all 6 are retrieved in candidates -> oracle is 5/6
+    y_true = {
+        "q1": ["d1", "d2", "d3", "d4", "d5", "d6"],
+        "q2": ["d7", "d8"],
+    }
+    candidates = {
+        "q1": ["d1", "d2", "d3", "d4", "d5", "d6", "dx"],
+        "q2": ["d7", "dy"],  # only 1 out of 2 gold documents retrieved
+    }
+
+    res = compute_top5_oracle(candidates, y_true)
+    # q1 ceiling: 5/6; q2 ceiling: 2/2 = 1.0 -> mean ceiling = (5/6 + 1.0)/2 = 11/12 = 0.91667
+    expected_ceiling = (5.0 / 6.0 + 1.0) / 2.0
+    assert pytest.approx(res["corpus_capacity_ceiling@5"], abs=1e-5) == expected_ceiling
+
+    # q1 oracle: min(5, 6) / 6 = 5/6; q2 oracle: min(5, 1) / 2 = 0.5 -> mean oracle = (5/6 + 0.5)/2 = 8/12 = 0.66667
+    expected_oracle = (5.0 / 6.0 + 0.5) / 2.0
+    assert pytest.approx(res["candidate_pool_oracle@5"], abs=1e-5) == expected_oracle
+
+    # Test integrated into evaluate_predictions
+    eval_res = evaluate_predictions(
+        y_pred={"q1": ["d1", "d2", "d3", "d4", "d5"], "q2": ["d7", "d8"]},
+        y_true=y_true,
+        candidate_pools=candidates,
+    )
+    assert "oracle_recall@5" in eval_res
+    assert pytest.approx(eval_res["oracle_recall@5"], abs=1e-5) == expected_oracle
+    assert pytest.approx(eval_res["corpus_capacity_ceiling@5"], abs=1e-5) == expected_ceiling
+

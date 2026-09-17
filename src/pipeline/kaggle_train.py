@@ -73,6 +73,11 @@ class StageTimingEntry:
     """Telemetry entry for a pipeline execution stage."""
     seconds: float
     cache_hit: bool = False
+    start_time: float | None = None
+    end_time: float | None = None
+    workload_count: int | None = None
+    error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class StageTimingTelemetry:
@@ -81,15 +86,38 @@ class StageTimingTelemetry:
     def __init__(self) -> None:
         self._stages: dict[str, StageTimingEntry] = {}
 
-    def record(self, stage_name: str, elapsed_seconds: float, cache_hit: bool = False) -> None:
+    def record(
+        self,
+        stage_name: str,
+        elapsed_seconds: float,
+        cache_hit: bool = False,
+        start_time: float | None = None,
+        end_time: float | None = None,
+        workload_count: int | None = None,
+        error: str | None = None,
+        **metadata: Any,
+    ) -> None:
         self._stages[stage_name] = StageTimingEntry(
             seconds=round(float(elapsed_seconds), 4),
             cache_hit=bool(cache_hit),
+            start_time=round(float(start_time), 4) if start_time is not None else None,
+            end_time=round(float(end_time), 4) if end_time is not None else None,
+            workload_count=int(workload_count) if workload_count is not None else None,
+            error=str(error) if error is not None else None,
+            metadata=metadata,
         )
 
     def to_dict(self) -> dict[str, dict[str, Any]]:
         return {
-            name: {"seconds": entry.seconds, "cache_hit": entry.cache_hit}
+            name: {
+                "seconds": entry.seconds,
+                "cache_hit": entry.cache_hit,
+                **({"start_time": entry.start_time} if entry.start_time is not None else {}),
+                **({"end_time": entry.end_time} if entry.end_time is not None else {}),
+                **({"workload_count": entry.workload_count} if entry.workload_count is not None else {}),
+                **({"error": entry.error} if entry.error is not None else {}),
+                **entry.metadata,
+            }
             for name, entry in self._stages.items()
         }
 
@@ -846,6 +874,7 @@ def run_kaggle_pipeline(
     precision: str | None = None,
     strict_artifacts: bool | None = None,
     allow_nonstandard_production_devices: bool = False,
+    backend: str | None = None,
 ) -> KaggleRunResult:
     """
     Execute the complete 24-step high-score LegalIR production pipeline on Kaggle.
@@ -880,6 +909,26 @@ def run_kaggle_pipeline(
     is_smoke = run_mode_str == "smoke"
     is_gpu_smoke = run_mode_str == "gpu_smoke"
     is_full = run_mode_str == "full"
+
+    # Backend policy enforcement (QUALITY_RUNTIME_PLAN.md Section 1):
+    # Kaggle backend is strictly restricted to bounded smoke contracts ('smoke', 'gpu_smoke').
+    # FULL production training and official submission generation must run on Modal or Google Colab.
+    resolved_backend = str(backend).lower().strip() if backend is not None else os.environ.get("LEGALIR_BACKEND", "").lower().strip()
+    if not resolved_backend:
+        if Path("/kaggle/working").exists() and not Path("/content").exists() and not Path("/root/legalir_volume").exists():
+            resolved_backend = "kaggle"
+        elif Path("/content").exists():
+            resolved_backend = "colab"
+        elif Path("/root/legalir_volume").exists():
+            resolved_backend = "modal"
+        else:
+            resolved_backend = "local"
+
+    if resolved_backend == "kaggle" and is_full:
+        raise RuntimeError(
+            "Backend policy violation: Kaggle backend is restricted to bounded smoke contracts ('smoke', 'gpu_smoke'). "
+            "FULL production training and official submission generation must run on Modal or Google Colab with explicit authorization."
+        )
 
     stage_timings = StageTimingTelemetry()
 
@@ -1297,6 +1346,8 @@ def run_kaggle_pipeline(
         split_provenance=split_provenance_report,
         precision=_prec_norm,
         num_workers=runtime_num_workers,
+        reranker_batch_size=int(reranker_cfg.get("inference_batch_size") or reranker_cfg.get("batch_size", 16)),
+        reranker_max_length=int(reranker_cfg.get("max_length", 384)),
     )
     cv_report = oof_runner.run()
     oof_cv_time = max(0.001, time.perf_counter() - t_oof0)
@@ -1305,6 +1356,7 @@ def run_kaggle_pipeline(
     oof_num_folds = int(oof_runner.num_folds)
     doc_disjoint_report = dict(getattr(oof_runner, "doc_disjoint_report", {}) or {})
     rss_after_oof_mb = get_process_rss_mb()
+    shared_static_branch_cache = getattr(oof_runner, "_static_branch_cache", {})
     del oof_runner
     gc.collect()
     if torch.cuda.is_available():
@@ -1386,6 +1438,7 @@ def run_kaggle_pipeline(
         negatives_per_positive=8,
         query_embeddings=train_query_embs,
         duplicate_groups_path=dup_groups_path,
+        static_branch_cache=shared_static_branch_cache,
     )
     final_pairs_file = pairs_dir / "reranker_pairs.parquet"
     final_pair_mining_time = max(0.001, time.perf_counter() - t_pm0)
@@ -1408,24 +1461,37 @@ def run_kaggle_pipeline(
 
     # 10c. Train Final LoRA Reranker on GPU 1
     final_reranker_dir = checkpoints_dir / "reranker_final"
-    max_final_steps = effective_max_steps
-    print(f"[*] Training Final Supervised LoRA Reranker on {reranker_device} (max_steps={max_final_steps})...")
-    t_tr0 = time.perf_counter()
-    final_reranker_report = train_reranker(
-        pairs_file=final_pairs_file,
-        config_path=resolved_reranker_config,
-        output_dir=final_reranker_dir,
-        fold=None,
-        max_steps=max_final_steps,
-        base_model_name="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
-        device=reranker_device,
-        precision=_prec_norm,
-        num_workers=runtime_num_workers,
-        enforce_full_coverage_steps=is_full,
-    )
-    final_training_time = max(0.001, time.perf_counter() - t_tr0)
-    stage_timings.record("final_reranker_training", elapsed_seconds=final_training_time, cache_hit=False)
-    print(f"[+] Final Reranker Training Status: {final_reranker_report.get('status')} | Checkpoint: {final_reranker_dir}")
+    final_complete_file = final_reranker_dir / "complete.json"
+    reusing_final_reranker = False
+    if final_complete_file.is_file() and (final_reranker_dir / "adapter_config.json").is_file():
+        try:
+            final_reranker_report = json.loads(final_complete_file.read_text(encoding="utf-8"))
+            print(f"[+] Reusing existing final reranker model checkpoint from {final_reranker_dir}")
+            stage_timings.record("final_reranker_training", elapsed_seconds=0.001, cache_hit=True)
+            reusing_final_reranker = True
+        except Exception:
+            reusing_final_reranker = False
+
+    if not reusing_final_reranker:
+        max_final_steps = effective_max_steps
+        print(f"[*] Training Final Supervised LoRA Reranker on {reranker_device} (max_steps={max_final_steps})...")
+        t_tr0 = time.perf_counter()
+        final_reranker_report = train_reranker(
+            pairs_file=final_pairs_file,
+            config_path=resolved_reranker_config,
+            output_dir=final_reranker_dir,
+            fold=None,
+            max_steps=max_final_steps,
+            base_model_name="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
+            device=reranker_device,
+            precision=_prec_norm,
+            num_workers=runtime_num_workers,
+            enforce_full_coverage_steps=is_full,
+        )
+        final_training_time = max(0.001, time.perf_counter() - t_tr0)
+        stage_timings.record("final_reranker_training", elapsed_seconds=final_training_time, cache_hit=False)
+        print(f"[+] Final Reranker Training Status: {final_reranker_report.get('status')} | Checkpoint: {final_reranker_dir}")
+        (final_reranker_dir / "complete.json").write_text(json.dumps(final_reranker_report, indent=2), encoding="utf-8")
 
     if is_full:
         min_coverage = 99.0
@@ -1478,6 +1544,9 @@ def run_kaggle_pipeline(
         audit_preflight=True,
         audit_output_json=final_audit_json,
         reranker_model_name="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
+        reranker_batch_size=int(reranker_cfg.get("inference_batch_size") or reranker_cfg.get("batch_size", 16)),
+        reranker_max_length=int(reranker_cfg.get("max_length", 384)),
+        precision=_prec_norm,
     )
     final_audit_report = pipeline.audit_parameters(
         output_json=final_audit_json,
@@ -1525,20 +1594,18 @@ def run_kaggle_pipeline(
                 raise RuntimeError(f"Failed to precompute public query embeddings on {dense_device} in {run_mode_str.upper()} mode: {e}") from e
             print(f"[-] Warning: public query embedding precomputation skipped: {e}")
 
-    for idx, (qid, q_val) in enumerate(q_items, start=1):
-        q_text = q_val.get("question", "") if isinstance(q_val, dict) else str(q_val)
-        q_emb = public_q_embs.get(str(qid))
-        pred_docs = pipeline.predict_single(
-            query=q_text,
-            query_id=str(qid),
-            top_k_candidates=150 if is_full else 20,
-            top_k_rerank=50 if is_full else 10,
-            q_emb=q_emb,
-        )
-        predictions[str(qid)] = {"answer": pred_docs}
-        if idx % 100 == 0 or idx == len(q_items):
-            elapsed = time.perf_counter() - t0_infer
-            print(f"    [{idx:4d}/{len(q_items):4d}] queries predicted ({idx / elapsed:.2f} q/s)")
+    public_query_dict = {
+        str(qid): (q_val.get("question", "") if isinstance(q_val, dict) else str(q_val))
+        for qid, q_val in q_items
+    }
+    pipeline.candidate_k = 150 if is_full else 20
+    pipeline.rerank_k = 50 if is_full else 10
+
+    predictions = pipeline.predict_batch(
+        public_query_dict,
+        query_embeddings=public_q_embs,
+        show_progress=True,
+    )
 
     public_inference_time = max(0.001, time.perf_counter() - t0_infer)
     stage_timings.record("public_inference", elapsed_seconds=public_inference_time, cache_hit=False)

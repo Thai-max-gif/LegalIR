@@ -241,3 +241,23 @@ def test_public_top5_is_unique_complete_and_official(tmp_path):
     assert len(preds["q1"]) == 5
     assert len(set(preds["q1"])) == 5
     assert preds["q1"] == [f"doc_{i}" for i in range(5)]
+
+
+def test_fusion_missing_rank_sentinel_parity():
+    """Verify that absent ranks as None vs 999.0 sentinel yield identical RRF scores."""
+    rf = ReciprocalRankFusion(k=60)
+    raw_records = [
+        {"doc_id": "doc1", "raw_bm25_rank": 1, "dense_rank": None, "memory_rank": None, "pyvi_bm25_rank": None},
+        {"doc_id": "doc2", "raw_bm25_rank": None, "dense_rank": 2, "memory_rank": None, "pyvi_bm25_rank": None},
+    ]
+    feature_records = [
+        {"doc_id": "doc1", "raw_bm25_rank": 1.0, "dense_rank": 999.0, "memory_rank": 999.0, "pyvi_bm25_rank": 999.0},
+        {"doc_id": "doc2", "raw_bm25_rank": 999.0, "dense_rank": 2.0, "memory_rank": 999.0, "pyvi_bm25_rank": 999.0},
+    ]
+    raw_scored = rf.rank_candidates(raw_records)
+    feat_scored = rf.rank_candidates(feature_records)
+
+    for r_raw, r_feat in zip(raw_scored, feat_scored):
+        assert r_raw["doc_id"] == r_feat["doc_id"]
+        assert pytest.approx(r_raw["final_score"], abs=1e-6) == r_feat["final_score"]
+

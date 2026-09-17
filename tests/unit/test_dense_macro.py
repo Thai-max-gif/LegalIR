@@ -136,3 +136,21 @@ def test_encode_texts_mean_pools_attention_mask_and_normalizes():
     expected = np.array([[2.0, 1.0]], dtype=np.float32)
     expected /= np.linalg.norm(expected, axis=1, keepdims=True)
     assert np.allclose(embedding, expected)
+
+
+def test_dense_macro_fails_closed_on_load_failure(monkeypatch):
+    """Ensure DenseMacroRetriever raises RuntimeError instead of falling back to mock Bert."""
+    import transformers
+
+    def fail_from_pretrained(*args, **kwargs):
+        raise OSError("Connection error or missing weights")
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", fail_from_pretrained)
+    retriever = DenseMacroRetriever(
+        model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+        dimension=768,
+        use_pyvi=False,
+    )
+    with pytest.raises(RuntimeError, match="Failed to load tokenizer for real dense model"):
+        retriever.ensure_loaded()
+

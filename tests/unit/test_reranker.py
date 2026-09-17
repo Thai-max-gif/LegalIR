@@ -145,3 +145,36 @@ def test_run_all_reranker_default_follows_configured_enabled_flag():
         {"ranking": {"reranker": {"enabled": True}}}, False
     )
     assert run_all_module._resolve_use_reranker({}, None)
+
+
+def test_reranker_batch_exact_parity_with_individual_rerank():
+    def mock_score(pairs, batch_size=16, max_length=384):
+        scores = []
+        for q, p in pairs:
+            if "high" in p:
+                scores.append(0.9)
+            elif "med" in p:
+                scores.append(0.5)
+            else:
+                scores.append(0.1)
+        return scores
+
+    reranker = CrossEncoderReranker(model_name="mock", score_fn=mock_score)
+    q1 = "query 1"
+    cands1 = [{"doc_id": "d1_low", "text": "low evidence"}, {"doc_id": "d1_high", "text": "high evidence"}]
+    q2 = "query 2"
+    cands2 = [{"doc_id": "d2_med", "text": "med evidence"}, {"doc_id": "d2_low", "text": "low evidence"}]
+
+    # Individual calls
+    single1 = reranker.rerank(q1, cands1, top_k=2)
+    single2 = reranker.rerank(q2, cands2, top_k=2)
+
+    # Batched call
+    batched = reranker.rerank_batch([(q1, cands1), (q2, cands2)], top_k=2)
+
+    assert len(batched) == 2
+    assert [c["doc_id"] for c in batched[0]] == [c["doc_id"] for c in single1]
+    assert [c["reranker_best_score"] for c in batched[0]] == [c["reranker_best_score"] for c in single1]
+    assert [c["doc_id"] for c in batched[1]] == [c["doc_id"] for c in single2]
+    assert [c["reranker_best_score"] for c in batched[1]] == [c["reranker_best_score"] for c in single2]
+

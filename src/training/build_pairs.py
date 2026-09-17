@@ -47,6 +47,7 @@ def build_training_pairs(
     include_pyvi_negatives: bool = True,
     query_embeddings: Mapping[str, Any] | None = None,
     duplicate_groups_path: str | Path | None = None,
+    static_branch_cache: dict[str, Any] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build fold-safe positive and multi-band hard negative pairs for cross-encoder training.
@@ -216,19 +217,52 @@ def build_training_pairs(
 
         q_emb = query_embeddings.get(qid) if query_embeddings is not None else None
 
-        # Multi-band candidate generation
-        # 1. Exact matches
-        exact_cands = exact.search(q_text, top_k=10) if exact else []
-        # 2. BM25 top candidates
-        bm25_cands = bm25.search(q_text, top_k=50) if bm25 else []
-        # 2b. BM25 PyVi top candidates
-        pyvi_cands = bm25_pyvi.search(q_text, top_k=50) if bm25_pyvi else []
-        # 3. Dense top candidates
-        dense_cands = dense.retrieve(q_text, top_k=50, q_emb=q_emb) if dense else []
+        # Multi-band candidate generation with cached static branches across folds
+        if static_branch_cache is not None and qid in static_branch_cache:
+            cached_static = static_branch_cache[qid]
+            exact_cands = cached_static.get("exact", [])
+            bm25_cands = cached_static.get("bm25", [])
+            pyvi_cands = cached_static.get("bm25_pyvi", [])
+            dense_cands = cached_static.get("dense", [])
+            bm25_80 = cached_static.get("bm25_80", bm25_cands)
+            pyvi_80 = cached_static.get("pyvi_80", pyvi_cands)
+            dense_80 = cached_static.get("dense_80", dense_cands)
+        else:
+            exact_cands = exact.search(q_text, top_k=10) if exact else []
+            bm25_80 = bm25.search(q_text, top_k=80) if bm25 else []
+            bm25_cands = bm25_80[:50]
+            pyvi_80 = bm25_pyvi.search(q_text, top_k=80) if bm25_pyvi else []
+            pyvi_cands = pyvi_80[:50]
+            dense_80 = dense.retrieve(q_text, top_k=80, q_emb=q_emb) if dense else []
+            dense_cands = dense_80[:50]
+            if static_branch_cache is not None:
+                static_branch_cache[qid] = {
+                    "exact": exact_cands,
+                    "bm25": bm25_cands,
+                    "bm25_pyvi": pyvi_cands,
+                    "dense": dense_cands,
+                    "bm25_80": bm25_80,
+                    "pyvi_80": pyvi_80,
+                    "dense_80": dense_80,
+                }
+
         # 4. Question memory candidates (fold-safe, excludes current qid)
         mem_cands = memory.query(q_text, exclude_qid=qid, top_k=10, q_emb=q_emb) if memory else []
-        # 5. Hybrid pool
-        hybrid_cands = hybrid_engine.search_candidates(q_text, exclude_qid=qid, top_k=80, q_emb=q_emb)
+
+        # 5. Hybrid pool (pass precomputed static branches)
+        branch_cands_for_hybrid = {
+            "exact": exact_cands,
+            "bm25": bm25_80,
+            "bm25_pyvi": pyvi_80,
+            "dense": dense_80,
+        }
+        hybrid_cands = hybrid_engine.search_candidates(
+            q_text,
+            exclude_qid=qid,
+            top_k=80,
+            q_emb=q_emb,
+            branch_candidates=branch_cands_for_hybrid,
+        )
 
         # Medium negatives from lower-ranked hybrid candidates (ranks 20-80)
         medium_cands = hybrid_cands[20:] if len(hybrid_cands) > 20 else []
@@ -257,10 +291,15 @@ def build_training_pairs(
             max_total=negatives_per_positive * len(gold_ids),
         )
 
+        query_evidence_cache: dict[str, tuple[Any, str]] = {}
         for gold_id in gold_ids:
-            pos_chunk = localizer.localize(q_text, gold_id)
-            pos_chunk_id = pos_chunk.get("chunk_id") if pos_chunk else None
-            pos_evidence = evidence_builder.build_pack(q_text, gold_id, max_chunks=max_evidence_chunks)
+            if gold_id in query_evidence_cache:
+                pos_chunk_id, pos_evidence = query_evidence_cache[gold_id]
+            else:
+                pos_chunk = localizer.localize(q_text, gold_id)
+                pos_chunk_id = pos_chunk.get("chunk_id") if pos_chunk else None
+                pos_evidence = evidence_builder.build_pack(q_text, gold_id, max_chunks=max_evidence_chunks)
+                query_evidence_cache[gold_id] = (pos_chunk_id, pos_evidence)
 
             # Positive pair for reranker
             reranker_rows.append({
@@ -279,9 +318,13 @@ def build_training_pairs(
 
             for neg_record in mined_neg_records:
                 neg_id = str(neg_record["doc_id"])
-                neg_chunk = localizer.localize(q_text, neg_id)
-                neg_chunk_id = neg_chunk.get("chunk_id") if neg_chunk else None
-                neg_evidence = evidence_builder.build_pack(q_text, neg_id, max_chunks=max_evidence_chunks)
+                if neg_id in query_evidence_cache:
+                    neg_chunk_id, neg_evidence = query_evidence_cache[neg_id]
+                else:
+                    neg_chunk = localizer.localize(q_text, neg_id)
+                    neg_chunk_id = neg_chunk.get("chunk_id") if neg_chunk else None
+                    neg_evidence = evidence_builder.build_pack(q_text, neg_id, max_chunks=max_evidence_chunks)
+                    query_evidence_cache[neg_id] = (neg_chunk_id, neg_evidence)
 
                 retriever_rows.append({
                     "query_id": qid,

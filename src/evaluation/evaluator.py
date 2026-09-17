@@ -235,7 +235,7 @@ def evaluate_predictions(
         "total_evaluated_queries": len(recalls),
     }
 
-    # Candidate Recall cutoffs if candidate_pools provided
+    # Candidate Recall cutoffs and Oracle metrics if candidate_pools provided
     if candidate_pools is not None:
         cand_cutoffs = normalize_candidate_cutoffs(cutoffs)
         cand_metrics = compute_candidate_cutoffs(candidate_pools, y_true, cutoffs=cand_cutoffs)
@@ -244,6 +244,11 @@ def evaluate_predictions(
             num = k.split("@")[-1]
             metrics[f"cand@{num}"] = v
             metrics[f"Candidate Recall@{num}"] = v
+
+        oracle_metrics = compute_top5_oracle(candidate_pools, y_true)
+        metrics.update(oracle_metrics)
+        metrics["oracle_recall@5"] = oracle_metrics.get("candidate_pool_oracle@5", 0.0)
+        metrics["Oracle Recall@5"] = oracle_metrics.get("candidate_pool_oracle@5", 0.0)
 
     # Runtime metrics if runtimes provided
     if runtimes is not None:
@@ -322,3 +327,53 @@ def compute_candidate_cutoffs(
         )
         for cutoff in normalized_cutoffs
     }
+
+
+def compute_top5_oracle(
+    candidates: dict[str, Any] | None,
+    ground_truths: dict[str, Any],
+) -> dict[str, float]:
+    """Compute the top-five oracle feasibility metrics.
+
+    1. Corpus capacity ceiling: min(5, |Gq|) / |Gq|
+       Theoretical maximum Recall@5 attainable even with perfect candidate retrieval and ranking.
+    2. Candidate pool oracle: min(5, |Gq intersect Cq|) / |Gq|
+       Maximum Recall@5 attainable given the actual retrieved candidate pools.
+    """
+    normalized_truths = _normalize_query_values(ground_truths)
+    normalized_candidates = {str(qid): value for qid, value in (candidates or {}).items()}
+
+    corpus_ceilings = []
+    oracle_recalls = []
+
+    for qid, gold_list in normalized_truths.items():
+        gold_set = set(gold_list)
+        if not gold_set:
+            continue
+
+        corpus_ceil = min(5, len(gold_set)) / len(gold_set)
+        corpus_ceilings.append(corpus_ceil)
+
+        if candidates is not None:
+            raw_cands = normalized_candidates.get(qid, [])
+            if isinstance(raw_cands, (str, bytes, Mapping)):
+                raw_cands = _normalize_ids(raw_cands)
+            else:
+                try:
+                    raw_cands = list(raw_cands)
+                except TypeError:
+                    raw_cands = _normalize_ids(raw_cands)
+            cand_ids = {
+                doc_id
+                for doc_id in (_candidate_doc_id(c) for c in raw_cands)
+                if doc_id is not None
+            }
+            oracle_rec = min(5, len(gold_set & cand_ids)) / len(gold_set)
+            oracle_recalls.append(oracle_rec)
+
+    res = {
+        "corpus_capacity_ceiling@5": float(np.mean(corpus_ceilings)) if corpus_ceilings else 0.0,
+    }
+    if candidates is not None:
+        res["candidate_pool_oracle@5"] = float(np.mean(oracle_recalls)) if oracle_recalls else 0.0
+    return res

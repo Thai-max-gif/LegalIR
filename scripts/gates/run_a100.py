@@ -441,6 +441,7 @@ def run_a100_production_gate(
                 data_dir=str(dataset_dir),
                 working_dir=str(output_dir),
                 run_mode="full",
+                backend="colab" if Path("/content").exists() else ("modal" if Path("/root/legalir_volume").exists() else "colab"),
                 device_contract=COLAB_A100_CONTRACT,
                 precision=prec_norm,
                 repo_root=str(REPO_ROOT),

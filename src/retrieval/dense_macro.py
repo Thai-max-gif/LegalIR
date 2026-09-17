@@ -45,6 +45,7 @@ class DenseMacroRetriever:
         use_pyvi: bool = True,
         device: str | None = None,
         model_name_or_path: str | None = None,
+        revision: str | None = None,
     ):
         if model_name_or_path is not None:
             model_name = model_name_or_path
@@ -57,6 +58,7 @@ class DenseMacroRetriever:
             raise ValueError("dimension must be positive")
         self.use_pyvi = bool(use_pyvi)
         self.device = resolve_device(device or "auto")
+        self.revision = str(revision) if revision is not None else None
 
         self.tokenizer = None
         self.model = None
@@ -164,32 +166,34 @@ class DenseMacroRetriever:
         from transformers import AutoModel, AutoTokenizer
 
         print(f"Loading dense model {self.model_name} on {self.device}...")
+        revision = getattr(self, "revision", None)
+        if revision is None:
+            try:
+                from src.models.bootstrap import MODEL_REGISTRY
+                if self.model_name in MODEL_REGISTRY:
+                    revision = MODEL_REGISTRY[self.model_name].get("revision")
+            except Exception:
+                pass
+
+        kwargs: dict[str, Any] = {}
+        if revision:
+            kwargs["revision"] = revision
+
         if self.tokenizer is None:
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            except Exception:
-                import tempfile
-                from transformers import BertTokenizerFast
-                tmp_vocab = Path(tempfile.gettempdir()) / "mock_vocab.txt"
-                if not tmp_vocab.exists():
-                    vocab_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + [f"tok_{i}" for i in range(295)]
-                    tmp_vocab.write_text("\n".join(vocab_tokens) + "\n", encoding="utf-8")
-                self.tokenizer = BertTokenizerFast(vocab_file=str(tmp_vocab))
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, **kwargs)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load tokenizer for real dense model '{self.model_name}' (revision={revision}): {exc}"
+                ) from exc
 
         if self.model is None:
             try:
-                self.model = AutoModel.from_pretrained(self.model_name)
-            except Exception:
-                from transformers import BertConfig, BertModel
-                config = BertConfig(
-                    vocab_size=300,
-                    hidden_size=self.dimension,
-                    num_attention_heads=2,
-                    num_hidden_layers=2,
-                    intermediate_size=64,
-                    max_position_embeddings=512,
-                )
-                self.model = BertModel(config)
+                self.model = AutoModel.from_pretrained(self.model_name, **kwargs)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load real dense model '{self.model_name}' (revision={revision}): {exc}"
+                ) from exc
 
         self.model.to(self.device)
         self.model.eval()
@@ -638,6 +642,7 @@ class DenseMacroRetriever:
         dimension: int = DEFAULT_DIMENSION,
         use_pyvi: bool = True,
         model_name_or_path: str | None = None,
+        revision: str | None = None,
     ) -> Path:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -649,6 +654,7 @@ class DenseMacroRetriever:
             dimension=dimension,
             use_pyvi=use_pyvi,
             device=device,
+            revision=revision,
         )
         embeddings = encoder.encode_corpus(records, batch_size=batch_size, max_length=max_length)
         np.save(str(output_dir / "embeddings.npy"), embeddings.astype(np.float16))
@@ -658,6 +664,7 @@ class DenseMacroRetriever:
         manifest = {
             "model_name": model_name,
             "model_name_or_path": model_name,
+            "revision": revision or getattr(encoder, "revision", None),
             "total_macro_chunks": len(records),
             "embedding_dimension": int(embeddings.shape[1]),
             "dtype": "float16",
@@ -675,16 +682,26 @@ class DenseMacroRetriever:
         device: str | None = None,
         use_pyvi: bool = True,
         model_name_or_path: str | None = None,
+        revision: str | None = None,
     ) -> "DenseMacroRetriever":
         index_dir = Path(index_dir)
         embeddings = np.load(str(index_dir / "embeddings.npy"), mmap_mode="r")
         meta_df = pd.read_parquet(index_dir / "chunks_meta.parquet")
         model_name = model_name_or_path or model_name
+        manifest_path = index_dir / "manifest.json"
+        if revision is None and manifest_path.is_file():
+            try:
+                manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if "revision" in manifest_data and manifest_data["revision"]:
+                    revision = manifest_data["revision"]
+            except Exception:
+                pass
         retriever = cls(
             model_name=model_name,
             dimension=int(embeddings.shape[1]),
             use_pyvi=use_pyvi,
             device=device,
+            revision=revision,
         )
         retriever._set_embeddings(embeddings)
         retriever.chunk_ids = meta_df["chunk_id"].astype(str).tolist()

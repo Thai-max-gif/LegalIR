@@ -81,12 +81,12 @@ class ReciprocalRankFusion:
 
             # 1. Raw / Legal BM25 component
             raw_bm25_r = c.get("raw_bm25_rank", c.get("bm25_rank"))
-            if raw_bm25_r is not None:
+            if raw_bm25_r is not None and float(raw_bm25_r) < 900.0:
                 score += self.w_bm25 / (self.k + float(raw_bm25_r))
 
             # 2. PyVi BM25 component
             pyvi_bm25_r = c.get("pyvi_bm25_rank", c.get("bm25_pyvi_rank"))
-            if pyvi_bm25_r is not None:
+            if pyvi_bm25_r is not None and float(pyvi_bm25_r) < 900.0:
                 score += self.w_pyvi / (self.k + float(pyvi_bm25_r))
 
             # 3. Exact Match component
@@ -96,12 +96,12 @@ class ReciprocalRankFusion:
 
             # 4. Question Memory component
             mem_r = c.get("memory_rank")
-            if mem_r is not None:
+            if mem_r is not None and float(mem_r) < 900.0:
                 score += self.w_memory / (self.k + float(mem_r))
 
             # 5. Dense component
             dense_r = c.get("dense_rank")
-            if dense_r is not None:
+            if dense_r is not None and float(dense_r) < 900.0:
                 score += self.w_dense / (self.k + float(dense_r))
 
             # 6. Reranker component (calibrated with sigmoid)

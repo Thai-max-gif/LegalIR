@@ -110,6 +110,7 @@ class HybridSearchEngine:
         rrf_k: int = 60,
         exclude_qid: str | None = None,
         q_emb: Any | None = None,
+        branch_candidates: Mapping[str, list[CandidateRecord]] | None = None,
     ) -> list[CandidateRecord]:
         """Retrieve and fuse up to ``top_k_candidates`` unique documents.
 
@@ -125,18 +126,33 @@ class HybridSearchEngine:
 
         branch_results: dict[str, tuple[dict[str, int], dict[str, dict[str, Any]]]] = {}
 
-        if self.bm25 is not None:
+        if branch_candidates and "bm25" in branch_candidates:
+            branch_results["bm25"] = self._rank_branch(
+                list(branch_candidates["bm25"])[:top_k_candidates], "bm25"
+            )
+        elif self.bm25 is not None:
             branch_results["bm25"] = self._rank_branch(
                 self._retrieve(self.bm25, query, top_k_candidates), "bm25"
             )
-        if self.bm25_pyvi is not None:
+
+        if branch_candidates and "bm25_pyvi" in branch_candidates:
+            branch_results["bm25_pyvi"] = self._rank_branch(
+                list(branch_candidates["bm25_pyvi"])[:top_k_candidates], "bm25_pyvi"
+            )
+        elif self.bm25_pyvi is not None:
             branch_results["bm25_pyvi"] = self._rank_branch(
                 self._retrieve(self.bm25_pyvi, query, top_k_candidates), "bm25_pyvi"
             )
-        if self.dense is not None:
+
+        if branch_candidates and "dense" in branch_candidates:
+            branch_results["dense"] = self._rank_branch(
+                list(branch_candidates["dense"])[:top_k_candidates], "dense"
+            )
+        elif self.dense is not None:
             branch_results["dense"] = self._rank_branch(
                 self._retrieve_dense(self.dense, query, top_k_candidates, q_emb=q_emb), "dense"
             )
+
         if self.memory is not None:
             branch_results["memory"] = self._rank_branch(
                 self._retrieve_memory(
@@ -148,7 +164,12 @@ class HybridSearchEngine:
                 ),
                 "memory",
             )
-        if self.exact is not None:
+
+        if branch_candidates and "exact" in branch_candidates:
+            branch_results["exact"] = self._rank_branch(
+                list(branch_candidates["exact"]), "exact"
+            )
+        elif self.exact is not None:
             branch_results["exact"] = self._rank_branch(
                 self._match_exact(self.exact, query), "exact"
             )
@@ -169,6 +190,7 @@ class HybridSearchEngine:
         q_emb: Any | None = None,
         *,
         top_k_candidates: int | None = None,
+        branch_candidates: Mapping[str, list[CandidateRecord]] | None = None,
     ) -> list[CandidateRecord]:
         """Backward-compatible wrapper around :meth:`search`."""
         if top_k_candidates is not None:
@@ -179,6 +201,7 @@ class HybridSearchEngine:
             rrf_k=rrf_k,
             exclude_qid=exclude_qid,
             q_emb=q_emb,
+            branch_candidates=branch_candidates,
         )
 
     def retrieve_candidates(

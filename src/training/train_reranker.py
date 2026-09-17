@@ -144,9 +144,21 @@ def train_reranker(
             tmp_vocab.write_text("\n".join(vocab_tokens) + "\n", encoding="utf-8")
         tokenizer = BertTokenizerFast(vocab_file=str(tmp_vocab))
     else:
-        print(f"Loading base model: {model_name_or_path}...")
+        resolved_revision = cfg.get("revision") or cfg.get("reranker_revision")
+        if resolved_revision is None:
+            try:
+                from src.models.bootstrap import MODEL_REGISTRY
+                if model_name_or_path in MODEL_REGISTRY:
+                    resolved_revision = MODEL_REGISTRY[model_name_or_path].get("revision")
+            except Exception:
+                pass
+        load_kwargs: dict[str, Any] = {}
+        if resolved_revision:
+            load_kwargs["revision"] = resolved_revision
+
+        print(f"Loading base model: {model_name_or_path} (revision={resolved_revision})...")
         try:
-            tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+            tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, **load_kwargs)
         except Exception as e:
             raise RuntimeError(f"Failed to load tokenizer for real base model '{model_name_or_path}': {e}") from e
 
@@ -154,6 +166,7 @@ def train_reranker(
             base_model = AutoModelForSequenceClassification.from_pretrained(
                 model_name_or_path,
                 num_labels=1,
+                **load_kwargs,
             )
         except Exception as e:
             raise RuntimeError(f"Failed to load real base model '{model_name_or_path}': {e}") from e

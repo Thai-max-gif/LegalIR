@@ -25,6 +25,9 @@ class CrossEncoderReranker:
         adapter_path: str | Path | None = None,
         manifest_path: str | Path | None = None,
         local_files_only: bool | None = None,
+        batch_size: int = 16,
+        max_length: int = 384,
+        precision: str | None = None,
     ):
         self.model_name = str(model_name)
         self.adapter_path = Path(adapter_path).expanduser() if adapter_path is not None else None
@@ -39,13 +42,16 @@ class CrossEncoderReranker:
             if device != "cpu" and self.model_name != "mock"
             else "cpu"
         )
+        self.batch_size = max(1, int(batch_size))
+        self.max_length = max(1, int(max_length))
+        self.precision = str(precision).lower().strip() if precision else None
         self.tokenizer = None
         self.model = None
         self.score_fn = score_fn
         self.oom_events: int = 0
-        self.initial_batch_size: int = 16
-        self.min_successful_batch_size: int = 16
-        self.last_successful_batch_size: int = 16
+        self.initial_batch_size: int = self.batch_size
+        self.min_successful_batch_size: int = self.batch_size
+        self.last_successful_batch_size: int = self.batch_size
 
     def _resolve_model_path(
         self,
@@ -239,26 +245,29 @@ class CrossEncoderReranker:
     def score_pairs(
         self,
         pairs: list[tuple[str, str]],
-        batch_size: int = 16,
-        max_length: int = 384,
+        batch_size: int | None = None,
+        max_length: int | None = None,
     ) -> list[float]:
         """Score ``(query, passage)`` pairs using deterministic mini-batches."""
         if not pairs:
             return []
-        if batch_size < 1:
+        effective_batch_size = int(batch_size) if batch_size is not None else self.batch_size
+        effective_max_length = int(max_length) if max_length is not None else self.max_length
+        if effective_batch_size < 1:
             raise ValueError("batch_size must be at least 1")
-        if max_length < 1:
+        if effective_max_length < 1:
             raise ValueError("max_length must be at least 1")
 
         if self.score_fn is not None:
-            return self._score_with_callback(pairs, batch_size, max_length)
+            return self._score_with_callback(pairs, effective_batch_size, effective_max_length)
 
         self._load_model()
         import torch
+        import contextlib
 
         # Clamp truncation to the loaded model's positional capacity so long
         # passages truncate instead of crashing position-embedding lookup.
-        caps = [max_length]
+        caps = [effective_max_length]
         model_cfg = getattr(self.model, "config", None)
         model_cap = getattr(model_cfg, "max_position_embeddings", None)
         if isinstance(model_cap, int) and 0 < model_cap < 100000:
@@ -268,13 +277,18 @@ class CrossEncoderReranker:
         tok_cap = getattr(self.tokenizer, "model_max_length", None)
         if isinstance(tok_cap, int) and 0 < tok_cap < 100000:
             caps.append(tok_cap)
-        max_length = min(caps)
+        effective_max_length = min(caps)
 
-        self.initial_batch_size = batch_size
-        current_batch = batch_size
+        self.initial_batch_size = effective_batch_size
+        current_batch = effective_batch_size
         all_scores: list[float] = []
         idx = 0
         n_pairs = len(pairs)
+
+        autocast_ctx = contextlib.nullcontext()
+        if str(self.device).startswith("cuda") and torch.cuda.is_available() and self.precision in ("bf16", "fp16"):
+            dtype = torch.bfloat16 if self.precision == "bf16" else torch.float16
+            autocast_ctx = torch.autocast(device_type="cuda", dtype=dtype)
 
         while idx < n_pairs:
             batch = pairs[idx : idx + current_batch]
@@ -286,11 +300,11 @@ class CrossEncoderReranker:
                     passages,
                     padding=True,
                     truncation=True,
-                    max_length=max_length,
+                    max_length=effective_max_length,
                     return_tensors="pt",
                 )
                 inputs = self._move_inputs_to_device(inputs)
-                with torch.inference_mode():
+                with torch.inference_mode(), autocast_ctx:
                     outputs = self.model(**inputs)
                 logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
                 batch_scores = logits.reshape(-1).float().cpu().tolist()
@@ -369,93 +383,137 @@ class CrossEncoderReranker:
             raise ValueError("candidate document ID cannot be null")
         return {"doc_id": str(candidate)}
 
+    def rerank_batch(
+        self,
+        queries_with_candidates: list[tuple[str, list[CandidateRecord] | list[tuple[Any, float]] | list[Any]]],
+        evidence_builder: EvidencePackBuilder | None = None,
+        top_k: int = 50,
+        batch_size: int | None = None,
+        max_length: int | None = None,
+    ) -> list[list[CandidateRecord]]:
+        """Rerank candidates across multiple queries concurrently in contiguous batches.
+
+        Flatten all candidate pairs across the query window, score them in batched forward passes,
+        and scatter the scores back into each query's target candidate list, preserving exact document
+        aggregation, relative ordering, and deterministic tie-breaking.
+        """
+        if not queries_with_candidates:
+            return []
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+
+        effective_batch_size = int(batch_size) if batch_size is not None else self.batch_size
+        effective_max_length = int(max_length) if max_length is not None else self.max_length
+
+        all_pairs: list[tuple[str, str]] = []
+        pair_meta: list[tuple[int, str, dict[str, Any]]] = []
+        query_targets: list[tuple[list[CandidateRecord], list[CandidateRecord]]] = []
+
+        for q_idx, (query, candidates) in enumerate(queries_with_candidates):
+            if not candidates or not query:
+                query_targets.append(([], []))
+                continue
+            normalized_candidates = [self._candidate_record(c) for c in candidates]
+            target_candidates = normalized_candidates[:top_k]
+            remaining_candidates = normalized_candidates[top_k:]
+            query_targets.append((target_candidates, remaining_candidates))
+
+            for candidate in target_candidates:
+                doc_id = str(candidate["doc_id"])
+                if evidence_builder is None:
+                    records = [{
+                        "chunk_id": f"{doc_id}_fallback",
+                        "reranker_text": f"[DOCUMENT] {doc_id} [EVIDENCE 1] {doc_id}",
+                    }]
+                else:
+                    records = evidence_builder.build(
+                        query,
+                        doc_id,
+                        candidate_record=candidate,
+                    )
+                for index, record in enumerate(records):
+                    passage = (
+                        record.get("pack")
+                        if index == 0 and record.get("pack")
+                        else record.get("reranker_text")
+                        or record.get("text")
+                        or record.get("chunk_text", "")
+                    )
+                    all_pairs.append((str(query), str(passage)))
+                    pair_meta.append((q_idx, doc_id, record))
+
+        all_scores = self.score_pairs(
+            all_pairs, batch_size=effective_batch_size, max_length=effective_max_length
+        )
+
+        q_doc_scores: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
+        q_doc_records: dict[int, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+
+        for (q_idx, doc_id, record), score in zip(pair_meta, all_scores):
+            q_doc_scores[q_idx][doc_id].append(float(score))
+            q_doc_records[q_idx][doc_id].append(record)
+
+        results: list[list[CandidateRecord]] = []
+        for q_idx, (query, candidates) in enumerate(queries_with_candidates):
+            if not candidates or not query:
+                results.append([self._candidate_record(c) for c in candidates] if candidates else [])
+                continue
+
+            target_candidates, remaining_candidates = query_targets[q_idx]
+            doc_scores_map = q_doc_scores[q_idx]
+            doc_records_map = q_doc_records[q_idx]
+
+            reranked_target: list[CandidateRecord] = []
+            for candidate in target_candidates:
+                doc_id = str(candidate["doc_id"])
+                updated_candidate = dict(candidate)
+                updated_candidate.update(
+                    self.aggregate_document(
+                        doc_id,
+                        doc_records_map.get(doc_id, []),
+                        doc_scores_map.get(doc_id, []),
+                    )
+                )
+                reranked_target.append(updated_candidate)
+
+            reranked_target.sort(
+                key=lambda candidate: (
+                    -float(candidate["reranker_best_score"]),
+                    str(candidate["doc_id"]),
+                )
+            )
+
+            for candidate in remaining_candidates:
+                candidate.update({
+                    "reranker_score": -999.0,
+                    "reranker_best_score": -999.0,
+                    "reranker_second_score": -999.0,
+                    "reranker_margin": 0.0,
+                    "reranker_best_chunk_id": None,
+                    "evidence_chunk_count": 0,
+                })
+            results.append(reranked_target + remaining_candidates)
+
+        return results
+
     def rerank(
         self,
         query: str,
         candidates: list[CandidateRecord] | list[tuple[Any, float]] | list[Any],
         evidence_builder: EvidencePackBuilder | None = None,
         top_k: int = 50,
-        batch_size: int = 16,
-        max_length: int = 384,
+        batch_size: int | None = None,
+        max_length: int | None = None,
     ) -> list[CandidateRecord]:
         """Rerank the first ``top_k`` candidates by BGE cross-encoder score."""
-        if not candidates or not query:
-            return candidates
-        if top_k < 1:
-            raise ValueError("top_k must be at least 1")
-
-        normalized_candidates = [self._candidate_record(candidate) for candidate in candidates]
-        target_candidates = normalized_candidates[:top_k]
-        remaining_candidates = normalized_candidates[top_k:]
-
-        all_pairs: list[tuple[str, str]] = []
-        pair_to_doc: list[tuple[str, dict[str, Any]]] = []
-        for candidate in target_candidates:
-            doc_id = str(candidate["doc_id"])
-            if evidence_builder is None:
-                records = [{
-                    "chunk_id": f"{doc_id}_fallback",
-                    "reranker_text": f"[DOCUMENT] {doc_id} [EVIDENCE 1] {doc_id}",
-                }]
-            else:
-                records = evidence_builder.build(
-                    query,
-                    doc_id,
-                    candidate_record=candidate,
-                )
-            for index, record in enumerate(records):
-                # The first pair is the complete multi-evidence document pack;
-                # additional pairs retain chunk-level evidence for aggregation.
-                passage = (
-                    record.get("pack")
-                    if index == 0 and record.get("pack")
-                    else record.get("reranker_text")
-                    or record.get("text")
-                    or record.get("chunk_text", "")
-                )
-                all_pairs.append((str(query), str(passage)))
-                pair_to_doc.append((doc_id, record))
-
-        all_scores = self.score_pairs(all_pairs, batch_size=batch_size, max_length=max_length)
-
-        doc_scores_map: dict[str, list[float]] = defaultdict(list)
-        doc_records_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for (doc_id, record), score in zip(pair_to_doc, all_scores):
-            doc_scores_map[doc_id].append(float(score))
-            doc_records_map[doc_id].append(record)
-
-        reranked_target: list[CandidateRecord] = []
-        for candidate in target_candidates:
-            doc_id = str(candidate["doc_id"])
-            updated_candidate = dict(candidate)
-            updated_candidate.update(
-                self.aggregate_document(
-                    doc_id,
-                    doc_records_map.get(doc_id, []),
-                    doc_scores_map.get(doc_id, []),
-                )
-            )
-            reranked_target.append(updated_candidate)
-
-        reranked_target.sort(
-            key=lambda candidate: (
-                -float(candidate["reranker_best_score"]),
-                str(candidate["doc_id"]),
-            )
+        batch_res = self.rerank_batch(
+            [(query, candidates)],
+            evidence_builder=evidence_builder,
+            top_k=top_k,
+            batch_size=batch_size,
+            max_length=max_length,
         )
-
-        # Candidates outside the reranker budget retain their input order and
-        # receive explicit low scores so they cannot outrank scored records.
-        for candidate in remaining_candidates:
-            candidate.update({
-                "reranker_score": -999.0,
-                "reranker_best_score": -999.0,
-                "reranker_second_score": -999.0,
-                "reranker_margin": 0.0,
-                "reranker_best_chunk_id": None,
-                "evidence_chunk_count": 0,
-            })
-        return reranked_target + remaining_candidates
+        return batch_res[0] if batch_res else []
 
     def rerank_pairs(
         self,
