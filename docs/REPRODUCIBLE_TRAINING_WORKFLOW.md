@@ -1,5 +1,13 @@
 # Reproducible Training Workflow (Step-by-Step Guide)
 
+**Current Status (Updated 2026-09-17):**
+- **Runtime SHA:** `0ca7c135bcefb58b7fcb4f18ed9035a4e06d9428`
+- **Release SHA:** `aadd3f242f6258b2bacba5feef4783ccf373d84f`
+- **Stage 1 (Local Pre-Push):** PASSED (467/467 tests, zero drift, <4B parameter budget).
+- **Stage 2 (GitHub CI):** PASSED (Workflow run `35220762427` green on main).
+- **Stage 3 (Kaggle 2×T4 Smoke Gate):** PASSED on live hardware (Kernel Version 55, $\Delta w = 279.72 > 0$, $t = 31.63s$).
+- **Stage 4 (A100 Production Training):** Ready for execution on Modal (`scripts/modal/run_modal_cli.sh`) or Google Colab (`scripts/colab/run_colab_cli.sh A100`).
+
 ## 1. Workflow Lifecycle
 
 ```

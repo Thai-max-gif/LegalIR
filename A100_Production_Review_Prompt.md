@@ -27,12 +27,15 @@ We are using a multi-stage retrieval architecture:
 - **Constraints:** The competition enforces a strict `< 4.0B` learned parameter limit.
 
 ## 3. The Orchestration & Execution Logic
-The pipeline is orchestrated via `scripts/pipeline/kaggle_train.py` which runs a 24-step pipeline:
+The pipeline is orchestrated via `src/pipeline/kaggle_train.py` which runs a 24-step pipeline:
 - Validates the dataset fingerprints cryptographically before starting.
-- Checks the `parameter_audit` budget.
-- Performs 5-Fold Out-of-Fold (OOF) cross-validation to assess robustness and prevent data leakage.
-- Mines hard-negative pairs specific to each fold.
+- Checks the `parameter_audit` budget (< 4.0B cap).
+- Performs 5-Fold Out-of-Fold (OOF) cross-validation with fold-isolated hard-negative pairs and question memory.
+- Uses `QueryBalancedSampler` with 50/50 interleaved positive/negative windows to stabilize gradients during LoRA fine-tuning.
+- Caches static retrieval branches across all 5 folds and final training, eliminating duplicate BM25/PyVi/dense query searches.
+- Uses contiguous multi-query batch reranking (`rerank_batch`) with deterministic score scatter-back for high GPU throughput.
 - Evaluates the final pipeline against a strict document-disjoint split.
+- Checkpoint recovery: atomically persists `complete.json`, predictions, and metrics at fold boundaries so an interrupted run resumes without recomputing completed folds.
 - Packages final deliverables (adapter weights, training logs, ablation reports, and `submission.zip`).
 
 ## 4. The Cloud Delivery Mechanisms

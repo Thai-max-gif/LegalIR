@@ -34,8 +34,8 @@ def test_record_counts(dataset_dir: Path):
 def test_public_queries_count(dataset_dir: Path):
     pub_path = dataset_dir / "public-official.json"
     if not pub_path.is_file():
-        # Fallback to root or artifacts
-        pub_path = Path("artifacts/task1/data/public-official.json")
+        # Fallback to kaggle_dataset or root
+        pub_path = Path("kaggle_dataset/public-official.json")
     assert pub_path.is_file(), f"Missing public-official.json"
     with open(pub_path, "r", encoding="utf-8") as f:
         data = json.load(f)

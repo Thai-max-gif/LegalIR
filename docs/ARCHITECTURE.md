@@ -55,17 +55,23 @@ Query (Vietnamese Legal Question)
      $$RRF(d) = \sum_{m \in M} \frac{w_m}{k + \text{rank}_m(d)}$$
 
 ### 2.2 Neural Cross-Encoder Reranker
-- **Base Model**: `BAAI/bge-reranker-v2-m3` (568M parameters).
+- **Base Model**: `BAAI/bge-reranker-v2-m3` (568M parameters) pinned to immutable revision `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`.
 - **PEFT / LoRA Adapter**:
-  - Rank: $r=16$
-  - Scaling: $\alpha=32$
-  - Dropout: $0.05$
-  - Target Modules: `["query", "value", "key"]`
-  - Learned parameters: $< 4,000,000,000$ (strictly compliant with UIT <4B rule).
-- **Training Strategy**: Binary cross-entropy with logits over query-passage pairs.
+  - Rank: $r=8$ (production freeze), scaling: $\alpha=16$, dropout: $0.05$
+  - Target Modules: `["query", "value", "key", "dense"]`
+  - Learned parameters: 702,754,049 (~0.703B, strictly compliant with UIT <4B rule, ~17.57% utilization).
+- **Training Strategy**:
+  - Binary cross-entropy with logits over query-passage pairs.
+  - `QueryBalancedSampler`: Deterministically pairs 1 positive and 1 hard negative per eligible query in 50/50 interleaved windows to stabilize gradients and prevent class-blocked oscillations while guaranteeing complete query coverage.
+- **Inference Optimization**:
+  - `rerank_batch`: Flattens candidate pairs across multiple queries into contiguous GPU batches and scatters scores back to each query, achieving high accelerator utilization with deterministic tie-breaking.
+  - Supports explicit `batch_size`, `max_length=384`, and CUDA autocast mixed precision (`bf16`/`fp16`).
 
-### 2.3 Evidence Store & Memory Guard
+### 2.3 Evidence Store, Fusion & Invariant Validation
 - **MacroEvidenceStore**: Arrow-backed lazy reader with an LRU cache bounded at 512 MB to prevent Out-Of-Memory (OOM) on resource-constrained environments.
+- **Reciprocal Rank Fusion**: Aligned missing-rank sentinel (< 900.0) between candidate feature matrices and RRF scoring, eliminating phantom mass from unretrieved branches.
+- **Top-5 Oracle Feasibility**: Evaluator computes theoretical corpus capacity ceiling $\min(5, |G_q|) / |G_q|$ (100.0% on canonical corpus) and candidate pool oracle $\min(5, |G_q \cap C_q|) / |G_q|$.
+- **Checkpoint Recovery**: Saves atomic stage completion markers (`complete.json`), predictions, and features at fold boundaries, enabling seamless restart of interrupted production runs without repeating completed folds.
 
 ---
 

@@ -25,12 +25,14 @@ EXPECTED_DUPLICATE_GROUPS = 4
 def resolve_duplicate_groups_path(dataset_dir: Union[str, Path]) -> Optional[Path]:
     """
     Resolve path to duplicate_groups.json using the fallback chain:
-    dataset root -> dataset root/splits -> repo artifacts/task1/data -> None
+    dataset root -> dataset root/splits -> repo kaggle_dataset -> repo artifacts/task1/data -> None
     """
     d = Path(dataset_dir)
     candidates = [
         d / "duplicate_groups.json",
         d / "splits" / "duplicate_groups.json",
+        REPO_ROOT / "kaggle_dataset" / "duplicate_groups.json",
+        REPO_ROOT / "kaggle_dataset" / "splits" / "duplicate_groups.json",
         REPO_ROOT / "artifacts" / "task1" / "data" / "duplicate_groups.json",
         REPO_ROOT / "data" / "task1_canonical_v2" / "duplicate_groups.json",
     ]
@@ -43,12 +45,14 @@ def resolve_duplicate_groups_path(dataset_dir: Union[str, Path]) -> Optional[Pat
 def resolve_split_path(dataset_dir: Union[str, Path], filename: str) -> Optional[Path]:
     """
     Resolve path to a split artifact file using the fallback chain:
-    dataset root -> dataset root/splits -> repo artifacts/task1/data -> None
+    dataset root -> dataset root/splits -> repo kaggle_dataset -> repo artifacts/task1/data -> None
     """
     d = Path(dataset_dir)
     candidates = [
         d / filename,
         d / "splits" / filename,
+        REPO_ROOT / "kaggle_dataset" / filename,
+        REPO_ROOT / "kaggle_dataset" / "splits" / filename,
         REPO_ROOT / "artifacts" / "task1" / "data" / filename,
         REPO_ROOT / "data" / "task1_canonical_v2" / filename,
     ]

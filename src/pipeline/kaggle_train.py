@@ -520,8 +520,16 @@ def resolve_split_artifacts(
     cand_input_random = canonical_data_dir / "splits/random_5fold.json"
     cand_input_disjoint = canonical_data_dir / "splits/doc_disjoint_split.json"
 
-    cand_repo_random = repo / "artifacts/task1/data/splits/random_5fold.json"
-    cand_repo_disjoint = repo / "artifacts/task1/data/splits/doc_disjoint_split.json"
+    cand_repo_random = (
+        (repo / "kaggle_dataset/splits/random_5fold.json")
+        if (repo / "kaggle_dataset/splits/random_5fold.json").exists()
+        else repo / "artifacts/task1/data/splits/random_5fold.json"
+    )
+    cand_repo_disjoint = (
+        (repo / "kaggle_dataset/splits/doc_disjoint_split.json")
+        if (repo / "kaggle_dataset/splits/doc_disjoint_split.json").exists()
+        else repo / "artifacts/task1/data/splits/doc_disjoint_split.json"
+    )
 
     # 1. Random 5-fold split
     if cand_input_random.exists():
@@ -602,6 +610,7 @@ def resolve_duplicate_groups_path(
     candidates = [
         (canonical_data_dir / "duplicate_groups.json", "input"),
         (canonical_data_dir / "splits/duplicate_groups.json", "input_splits"),
+        (repo / "kaggle_dataset/duplicate_groups.json", "repo"),
         (repo / "artifacts/task1/data/duplicate_groups.json", "repo"),
     ]
     for cand, src_name in candidates:
@@ -714,6 +723,8 @@ def discover_data_dir(
         Path("/kaggle/input/uit-dsc-2026-task1/artifacts/task1/data"),
         Path("/kaggle/input/legalir-dataset/artifacts/task1/data"),
         Path("/kaggle/input/legalir-canonical/artifacts/task1/data"),
+        repo / "kaggle_dataset",
+        Path.cwd() / "kaggle_dataset",
         repo / "artifacts/task1/data",
         repo / "artifacts/shared/canonical/v2",
         Path.cwd() / "artifacts/task1/data",

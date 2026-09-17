@@ -134,8 +134,8 @@ def _assert_equivalence(opt_retriever: BM25PyViRetriever, legacy_data: dict[str,
 
 def test_bm25_pyvi_optimized_exact_equivalence():
     """Verify optimized BM25PyViRetriever generates identical results to legacy unoptimized baseline."""
-    chunks_path = Path("artifacts/task1/data/chunks.parquet")
-    docs_path = "artifacts/task1/data/documents.parquet"
+    chunks_path = Path("kaggle_dataset/chunks.parquet") if Path("kaggle_dataset/chunks.parquet").is_file() else Path("artifacts/task1/data/chunks.parquet")
+    docs_path = str(Path("kaggle_dataset/documents.parquet") if Path("kaggle_dataset/documents.parquet").is_file() else Path("artifacts/task1/data/documents.parquet"))
     if not chunks_path.is_file():
         pytest.skip("canonical dataset not present (Kaggle-only artifact)")
 

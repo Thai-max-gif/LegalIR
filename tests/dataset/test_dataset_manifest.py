@@ -13,7 +13,7 @@ def dataset_dir() -> Path:
 def test_manifest_metadata(dataset_dir: Path):
     manifest_p = dataset_dir / "manifest.json"
     if not manifest_p.is_file():
-        manifest_p = Path("artifacts/task1/data/manifest.json")
+        manifest_p = Path("kaggle_dataset/manifest.json")
     assert manifest_p.is_file(), "Missing manifest.json"
 
     with open(manifest_p, "r", encoding="utf-8") as f:

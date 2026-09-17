@@ -1,6 +1,19 @@
 # LegalIR Task 1: A100 Training Guide
 
-Kaggle T4x2 is the sole pre-A100 hardware gate. No single-T4 qualification is required.
+**Current Status (Updated 2026-09-17):**
+- **Verified Runtime Commit:** `0ca7c135bcefb58b7fcb4f18ed9035a4e06d9428`
+- **Verified Release Commit:** `aadd3f242f6258b2bacba5feef4783ccf373d84f`
+- **Pre-A100 Hardware Gate:** Kaggle 2×T4 CUDA Smoke Gate (B1.1) is **VERIFIED PASS** on live Kaggle environment (`phucdangg/legalir-training`, Version 55, $\Delta w = 279.72 > 0$, runtime 31.6s).
+- **CI Status:** GitHub Actions CI (`35220762427`) completely **GREEN** (`test`: 7m51s, `strict-release`: 2m2s).
+- **Core Optimizations Active:**
+  1. `QueryBalancedSampler`: 50/50 interleaved positive/negative windows for stable gradient updates.
+  2. Shared static branch retrieval cache across folds (eliminates duplicate query searches across 5 folds + doc-disjoint + final).
+  3. Contiguous multi-query batch reranking (`rerank_batch`) with score scattering.
+  4. Bounded multiprocessing in PyVi BM25 indexing (`min(4, os.cpu_count() - 1)`).
+  5. Missing-rank sentinel alignment (< 900.0) with RRF.
+  6. Completed-stage checkpoint recovery (`complete.json`, `predictions.parquet`, `metrics.json`) for zero redundant work on restart.
+  7. Fail-closed model/tokenizer loading with pinned revisions.
+  8. Top-5 oracle feasibility verified: 100.0% corpus capacity ceiling (no query has >5 gold documents).
 
 You have two backends. Repair both locally; qualify one candidate; use Modal first
 after durable-output repair unless a human chooses otherwise. Do not launch Modal
@@ -11,9 +24,9 @@ and Colab concurrently. Colab is a separately reviewed fallback, not an automati
 Durable outputs use `/root/legalir_volume/<sha>/attempts/<id>/` on the
 `legalir-production` Volume from the beginning. Completed adapter files and
 `recovery.tar.gz` do not depend on a final copy allowlist. Background commits
-improve durability while the process runs, but the last uncommitted bytes and
-the current unfinished training loop may still be lost on a hard kill. There is
-no checkpoint-resume; a timeout kill still requires a full re-run.
+improve durability while the process runs. Completed folds automatically persist
+`complete.json`, predictions, and metrics; on restart or recovery, completed folds
+and static retrieval caches are re-used directly to prevent redundant work.
 
 - Function timeout: 5 hours (`timeout=18000s` in `scripts/modal/run_modal_a100.py`,
   preserved unless separately reviewed). The timeout caps duration per attempt,

@@ -92,7 +92,7 @@ def test_duplicate_groups_repo_fallback(tmp_path):
 
 
 def test_real_canonical_fixture_uses_granularity_and_text_norm():
-    p = Path("artifacts/task1/data/chunks.parquet")
+    p = Path("kaggle_dataset/chunks.parquet") if Path("kaggle_dataset/chunks.parquet").is_file() else Path("artifacts/task1/data/chunks.parquet")
     if p.is_file():
         schema_names = pq.read_schema(str(p)).names
         assert "granularity" in schema_names

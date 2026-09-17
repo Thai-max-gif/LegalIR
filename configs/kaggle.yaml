@@ -10,6 +10,6 @@ lora_alpha: 32
 gradient_checkpointing: true
 use_hf_token: true
 paths:
-  canonical: "artifacts/task1/data"
+  canonical: "kaggle_dataset"
   indexes: "artifacts/task1/indexes"
   output_dir: "/kaggle/working/legalir_run"
