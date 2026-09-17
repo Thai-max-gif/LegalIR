@@ -438,7 +438,8 @@ class TrainQuestionMemory:
         index_dir = Path(index_dir)
         qa_path = index_dir / "train_qa.json"
         emb_path = index_dir / "train_embeddings.npy"
-        mem = cls(min_similarity=min_similarity, dense_encoder=dense_retriever)
+        has_dense = (dense_retriever is not None) or emb_path.is_file()
+        mem = cls(min_similarity=min_similarity, dense_encoder=dense_retriever, use_dense=has_dense)
         if qa_path.exists():
             with open(qa_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -448,7 +449,7 @@ class TrainQuestionMemory:
             if saved_emb is not None:
                 mem.fit(queries, qrels, dense_embeddings=saved_emb, encode_dense=False)
             else:
-                mem.fit(queries, qrels)
+                mem.fit(queries, qrels, encode_dense=has_dense)
         return mem
 
 
