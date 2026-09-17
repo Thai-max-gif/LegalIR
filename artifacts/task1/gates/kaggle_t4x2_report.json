@@ -10,7 +10,7 @@
   ],
   "elapsed_seconds": 30.6,
   "final_loss": 4.947309494018555,
-  "git_sha": "97e9c11583d88f88cf619e8fcbb42c902b351ae4",
+  "git_sha": "373e8791917915da36864b7eb9b2f457493b4a0e",
   "gpu_count": 2,
   "initial_loss": 5.370148181915283,
   "model_fallback_used": false,
