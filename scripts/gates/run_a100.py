@@ -435,13 +435,19 @@ def run_a100_production_gate(
     else:
         from src.pipeline.kaggle_train import run_kaggle_pipeline
         print(f"[*] Launching authoritative full 7,000-query A100 pipeline with {prec_norm.upper()}...", flush=True)
+        def _safe_exists(p_str: str) -> bool:
+            try:
+                return Path(p_str).exists()
+            except (PermissionError, OSError):
+                return False
+
         from scripts.colab.artifacts import training_log
         with training_log(output_dir):
             res = run_kaggle_pipeline(
                 data_dir=str(dataset_dir),
                 working_dir=str(output_dir),
                 run_mode="full",
-                backend="colab" if Path("/content").exists() else ("modal" if Path("/root/legalir_volume").exists() else "colab"),
+                backend="colab" if _safe_exists("/content") else ("modal" if _safe_exists("/root/legalir_volume") else "colab"),
                 device_contract=COLAB_A100_CONTRACT,
                 precision=prec_norm,
                 repo_root=str(REPO_ROOT),

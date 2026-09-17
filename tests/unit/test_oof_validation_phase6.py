@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 # Ensure scoring program directory is on sys.path
-repo_root = Path(__file__).resolve().parents[1]
+repo_root = Path(__file__).resolve().parents[2]
 scoring_prog_dir = repo_root / "Scoring-Program-Task-LegalIR"
 if str(scoring_prog_dir) not in sys.path:
     sys.path.insert(0, str(scoring_prog_dir))

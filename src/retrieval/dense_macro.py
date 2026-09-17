@@ -158,6 +158,27 @@ class DenseMacroRetriever:
 
     def _load_model(self) -> None:
         if self.model_name == "mock":
+            if self.tokenizer is None:
+                import tempfile
+                from transformers import BertTokenizerFast
+                tmp_vocab = Path(tempfile.gettempdir()) / "mock_dense_vocab.txt"
+                if not tmp_vocab.exists():
+                    vocab_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + [f"tok_{i}" for i in range(295)]
+                    tmp_vocab.write_text("\n".join(vocab_tokens) + "\n", encoding="utf-8")
+                self.tokenizer = BertTokenizerFast(vocab_file=str(tmp_vocab))
+            if self.model is None:
+                from transformers import BertConfig, BertModel
+                config = BertConfig(
+                    vocab_size=300,
+                    hidden_size=self.dimension,
+                    num_attention_heads=2,
+                    num_hidden_layers=2,
+                    intermediate_size=64,
+                    max_position_embeddings=512,
+                )
+                self.model = BertModel(config)
+            self.model.to(self.device)
+            self.model.eval()
             return
         if self.tokenizer is not None and self.model is not None:
             return

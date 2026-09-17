@@ -253,9 +253,14 @@ class OOFRunner:
     def _build_question_memory(self, **kwargs: Any) -> TrainQuestionMemory:
         """Build fold-local memory while reusing one dense encoder when no index exists."""
         dense_encoder = self.dense
-        if dense_encoder is None:
+        if dense_encoder is None and (self.train_query_embeddings or self.dense_device is not None):
             if self._shared_memory_dense_encoder is None:
-                self._shared_memory_dense_encoder = DenseMacroRetriever()
+                self._shared_memory_dense_encoder = DenseMacroRetriever(
+                    model_name="mock" if self.smoke else DEFAULT_MODEL_NAME,
+                    dimension=DEFAULT_DIMENSION,
+                    use_pyvi=not self.smoke,
+                    device=self.dense_device or "cpu",
+                )
             dense_encoder = self._shared_memory_dense_encoder
         return TrainQuestionMemory(dense_encoder=dense_encoder, **kwargs)
 

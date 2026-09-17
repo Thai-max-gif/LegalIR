@@ -913,13 +913,19 @@ def run_kaggle_pipeline(
     # Backend policy enforcement (QUALITY_RUNTIME_PLAN.md Section 1):
     # Kaggle backend is strictly restricted to bounded smoke contracts ('smoke', 'gpu_smoke').
     # FULL production training and official submission generation must run on Modal or Google Colab.
+    def _safe_exists(p_str: str) -> bool:
+        try:
+            return Path(p_str).exists()
+        except (PermissionError, OSError):
+            return False
+
     resolved_backend = str(backend).lower().strip() if backend is not None else os.environ.get("LEGALIR_BACKEND", "").lower().strip()
     if not resolved_backend:
-        if Path("/kaggle/working").exists() and not Path("/content").exists() and not Path("/root/legalir_volume").exists():
+        if _safe_exists("/kaggle/working") and not _safe_exists("/content") and not _safe_exists("/root/legalir_volume"):
             resolved_backend = "kaggle"
-        elif Path("/content").exists():
+        elif _safe_exists("/content"):
             resolved_backend = "colab"
-        elif Path("/root/legalir_volume").exists():
+        elif _safe_exists("/root/legalir_volume"):
             resolved_backend = "modal"
         else:
             resolved_backend = "local"
