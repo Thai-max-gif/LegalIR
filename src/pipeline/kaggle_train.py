@@ -1420,7 +1420,13 @@ def run_kaggle_pipeline(
             else (qid, queries_dict[qid], None)
             for qid in queries_dict.keys()
         ]
-        full_memory = TrainQuestionMemory(min_similarity=0.82, dense_encoder=dense_retriever, dense_device=dense_device)
+        has_dense_memory = (dense_retriever is not None) or bool(train_query_embs)
+        full_memory = TrainQuestionMemory(
+            min_similarity=0.82,
+            dense_encoder=dense_retriever,
+            use_dense=has_dense_memory,
+            dense_device=dense_device,
+        )
         full_memory.fit(queries_for_memory, qrels_dict_full)
         if len(full_memory.qids) == 0:
             raise ValueError("Final Question Memory has 0 indexed queries")
