@@ -160,6 +160,41 @@ def get_peak_process_rss_mb() -> float:
         return 0.0
 
 
+def resource_inventory() -> dict[str, Any]:
+    """Local measurement-protocol inventory: host/GPU resources for forecasts.
+
+    CPU-only and offline-safe. Records logical CPU count, total host RAM, and
+    visible GPU names/count so A100 qualification can select worker counts and
+    memory budgets from measurements, not arbitrary reservations.
+    """
+    import platform
+
+    inv: dict[str, Any] = {
+        "platform": platform.platform(),
+        "python": platform.python_version(),
+        "cpu_logical": os.cpu_count(),
+    }
+    try:
+        import psutil
+
+        inv["host_ram_total_mb"] = round(psutil.virtual_memory().total / (1024.0 * 1024.0), 2)
+        inv["host_ram_available_mb"] = round(psutil.virtual_memory().available / (1024.0 * 1024.0), 2)
+    except Exception:
+        inv["host_ram_total_mb"] = None
+        inv["host_ram_available_mb"] = None
+    try:
+        if torch.cuda.is_available():
+            inv["gpu_count"] = int(torch.cuda.device_count())
+            inv["gpu_names"] = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+        else:
+            inv["gpu_count"] = 0
+            inv["gpu_names"] = []
+    except Exception:
+        inv["gpu_count"] = None
+        inv["gpu_names"] = []
+    return inv
+
+
 def resolve_repo_path(value: str | Path | None, repo_root: str | Path) -> Path:
     """Resolve a path relative to the repo root if it is not already absolute."""
     if value is None:
@@ -168,6 +203,134 @@ def resolve_repo_path(value: str | Path | None, repo_root: str | Path) -> Path:
     if not p.is_absolute():
         p = Path(repo_root) / p
     return p.resolve()
+
+
+def query_ids_sha(query_ids: list[str]) -> str:
+    import hashlib
+
+    return hashlib.sha256(",".join(str(x) for x in query_ids).encode("utf-8")).hexdigest()
+
+
+def query_text_content_sha(query_ids: list[str], query_texts: list[str]) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    for qid, txt in zip(query_ids, query_texts):
+        h.update(str(qid).encode("utf-8"))
+        h.update(b"\x00")
+        h.update(str(txt).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def write_train_query_embedding_cache(
+    index_dir: str | Path,
+    query_ids: list[str],
+    query_texts: list[str],
+    embeddings: Any,
+    encoder_model: str,
+    encoder_revision: str | None,
+) -> None:
+    index_dir = Path(index_dir)
+    np.save(str(index_dir / "train_query_embeddings.npy"), np.asarray(embeddings))
+    emb_arr = np.asarray(embeddings)
+    (index_dir / "train_query_embeddings.meta.json").write_text(
+        json.dumps(
+            {
+                "query_ids": [str(x) for x in query_ids],
+                "count": len(query_ids),
+                "qids_sha256": query_ids_sha([str(x) for x in query_ids]),
+                "qid_text_sha256": query_text_content_sha(
+                    [str(x) for x in query_ids], [str(x) for x in query_texts]
+                ),
+                "encoder_model": str(encoder_model),
+                "encoder_revision": encoder_revision,
+                "embedding_dim": int(emb_arr.shape[1]) if emb_arr.ndim > 1 else None,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_validated_train_query_embeddings(
+    index_dir: str | Path,
+    query_ids: list[str],
+    query_texts: list[str],
+    encoder_model: str,
+    encoder_revision: str | None,
+    expected_dim: int | None = None,
+) -> Any | None:
+    """Return cached embeddings only when id order, text content, encoder match.
+
+    Returns ``None`` when the cache is missing, obsolete (no sidecar), or
+    mismatched. Callers must recompute on ``None``. When the id set matches
+    but order differs, rows are remapped by id.
+    """
+    index_dir = Path(index_dir)
+    npy_path = index_dir / "train_query_embeddings.npy"
+    meta_path = index_dir / "train_query_embeddings.meta.json"
+    if not npy_path.is_file():
+        return None
+    if not meta_path.is_file():
+        raise ValueError("embedding sidecar meta.json missing (obsolete cache)")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if int(meta.get("count", -1)) != len(query_ids):
+        raise ValueError(
+            f"count mismatch (meta={meta.get('count')} expected={len(query_ids)})"
+        )
+    if str(meta.get("qids_sha256") or "") != query_ids_sha([str(x) for x in query_ids]):
+        # Allow reorder-with-same-set via remap below; otherwise fail.
+        meta_ids = [str(x) for x in (meta.get("query_ids") or [])]
+        if set(meta_ids) != set(str(x) for x in query_ids):
+            raise ValueError("query-id order/content mismatch")
+    if str(meta.get("qid_text_sha256") or "") != query_text_content_sha(
+        [str(x) for x in query_ids], [str(x) for x in query_texts]
+    ):
+        # Text change with same ids still invalidates; but if order differs,
+        # the text hash above (current order) cannot match meta order. Fall
+        # back to set-based text check via meta ids when possible.
+        meta_ids = [str(x) for x in (meta.get("query_ids") or [])]
+        if not meta_ids or set(meta_ids) != set(str(x) for x in query_ids):
+            raise ValueError("query-text content mismatch")
+        # Recompute expected hash in meta order for a fair comparison.
+        by_text = {qid: txt for qid, txt in zip(query_ids, query_texts)}
+        try:
+            meta_order_texts = [by_text[qid] for qid in meta_ids]
+        except KeyError as exc:
+            raise ValueError("query-text content mismatch") from exc
+        if str(meta.get("qid_text_sha256") or "") != query_text_content_sha(meta_ids, meta_order_texts):
+            raise ValueError("query-text content mismatch")
+    if str(meta.get("encoder_model") or "") != str(encoder_model):
+        raise ValueError(
+            f"encoder model mismatch (meta={meta.get('encoder_model')} expected={encoder_model})"
+        )
+    if (meta.get("encoder_revision") or None) != (encoder_revision or None):
+        raise ValueError(
+            f"encoder revision mismatch (meta={meta.get('encoder_revision')} expected={encoder_revision})"
+        )
+    loaded = np.load(str(npy_path))
+    if loaded.ndim != 2:
+        raise ValueError(f"query embeddings must be 2-D, got ndim={loaded.ndim}.")
+    if loaded.shape[0] != len(query_ids):
+        raise ValueError(f"row-count mismatch (npy={loaded.shape[0]} expected={len(query_ids)})")
+    meta_dim = meta.get("embedding_dim")
+    if meta_dim is not None and int(meta_dim) != int(loaded.shape[1]):
+        raise ValueError(f"query embedding dim mismatch (meta={meta_dim} npy={loaded.shape[1]}).")
+    if expected_dim is not None and int(loaded.shape[1]) != int(expected_dim):
+        raise ValueError(f"query embedding dim mismatch (npy={loaded.shape[1]} expected={expected_dim}).")
+    try:
+        if not bool(np.isfinite(np.asarray(loaded)).all()):
+            raise ValueError("query embeddings contain non-finite values.")
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"query embedding integrity check failed: {exc}") from exc
+    meta_ids = [str(x) for x in (meta.get("query_ids") or [])]
+    if meta_ids and meta_ids != [str(x) for x in query_ids]:
+        by_row = {qid: loaded[i] for i, qid in enumerate(meta_ids)}
+        loaded = np.stack([by_row[qid] for qid in (str(x) for x in query_ids)])
+    return loaded
 
 
 def resolve_kaggle_devices(devices: list[str] | None = None) -> tuple[str, str]:
@@ -886,6 +1049,7 @@ def run_kaggle_pipeline(
     strict_artifacts: bool | None = None,
     allow_nonstandard_production_devices: bool = False,
     backend: str | None = None,
+    allow_stage_reuse: bool = False,
 ) -> KaggleRunResult:
     """
     Execute the complete 24-step high-score LegalIR production pipeline on Kaggle.
@@ -1244,11 +1408,20 @@ def run_kaggle_pipeline(
     dense_build_time = 0.001
     dense_cached = (dense_dir / "embeddings.npy").exists()
 
+    from src.retrieval.dense_macro import pinned_dense_revision as _pinned_dense_rev
+
+    _dense_model_id = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+    _dense_expected_rev = _pinned_dense_rev(_dense_model_id)
     t_dense0 = time.perf_counter()
     if dense_cached:
         print(f"[*] Loading cached DEk21 Dense index from {dense_dir} on {dense_device}...")
         try:
-            dense_retriever = DenseMacroRetriever.load(dense_dir, device=dense_device)
+            dense_retriever = DenseMacroRetriever.load(
+                dense_dir,
+                model_name=_dense_model_id,
+                revision=_dense_expected_rev,
+                device=dense_device,
+            )
             dense_build_time = max(0.001, time.perf_counter() - t_dense0)
         except Exception as e:
             if is_full or is_gpu_smoke:
@@ -1262,7 +1435,8 @@ def run_kaggle_pipeline(
             else df_chunks
         )
         dense_retriever = DenseMacroRetriever(
-            model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+            model_name=_dense_model_id,
+            revision=_dense_expected_rev,
             device=dense_device,
             dimension=768,
         )
@@ -1291,24 +1465,49 @@ def run_kaggle_pipeline(
             )
 
     # 7. Precompute Train Query Dense Embeddings on GPU 0 (P1.10)
+    # Cache rows are positional; reuse must validate query order/content and
+    # encoder identity, otherwise stale rows silently misalign.
     train_query_embs: dict[str, np.ndarray] = {}
     train_query_enc_time = 0.001
-    tq_cached = (index_dir / "train_query_embeddings.npy").exists()
+    tq_npy = index_dir / "train_query_embeddings.npy"
+    tq_cached = tq_npy.exists()
     t_tq0 = time.perf_counter()
     if not df_queries.empty and dense_retriever is not None:
         q_records = df_queries.to_dict("records")
         qids = [str(r["query_id"]) for r in q_records]
+        qtexts = [
+            str(r.get("question_norm") or r.get("question_raw") or r.get("question") or "")
+            for r in q_records
+        ]
+        _enc_model = str(getattr(dense_retriever, "model_name", getattr(dense_retriever, "model_name_or_path", "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2")))
+        _enc_rev = getattr(dense_retriever, "revision", None)
+        if not _enc_rev:
+            try:
+                from src.models.bootstrap import MODEL_REGISTRY as _EREG
+
+                _enc_rev = (_EREG.get(_enc_model) or {}).get("revision")
+            except Exception:
+                _enc_rev = None
+        _cache_valid = False
+        _cached_embs = None
+        _expected_qdim = int(getattr(dense_retriever, "dimension", 768))
         if tq_cached:
-            print(f"[*] Loading cached train query dense embeddings from {index_dir / 'train_query_embeddings.npy'}...")
-            embs = np.load(str(index_dir / "train_query_embeddings.npy"))
-            for qid, emb in zip(qids, embs):
+            try:
+                _cached_embs = load_validated_train_query_embeddings(
+                    index_dir, qids, qtexts, _enc_model, _enc_rev,
+                    expected_dim=_expected_qdim,
+                )
+                _cache_valid = True
+            except Exception as _ce:
+                print(f"[-] Train query embedding cache rejected ({_ce}); recomputing.")
+                _cache_valid = False
+                tq_cached = False
+        if _cache_valid and _cached_embs is not None:
+            print(f"[*] Loading validated cached train query dense embeddings from {tq_npy}...")
+            for qid, emb in zip(qids, _cached_embs):
                 train_query_embs[qid] = emb
             train_query_enc_time = max(0.001, time.perf_counter() - t_tq0)
         else:
-            qtexts = [
-                str(r.get("question_norm") or r.get("question_raw") or r.get("question") or "")
-                for r in q_records
-            ]
             try:
                 print(f"[*] Precomputing train query embeddings for {len(qids):,} queries on {dense_device}...")
                 embs = dense_retriever.encode_queries(
@@ -1316,7 +1515,9 @@ def run_kaggle_pipeline(
                 )
                 for qid, emb in zip(qids, embs):
                     train_query_embs[qid] = emb
-                np.save(str(index_dir / "train_query_embeddings.npy"), embs)
+                write_train_query_embedding_cache(
+                    index_dir, qids, qtexts, embs, _enc_model, _enc_rev
+                )
                 train_query_enc_time = max(0.001, time.perf_counter() - t_tq0)
                 print(f"[+] Precomputed and cached {len(train_query_embs):,} train query dense embeddings.")
             except Exception as e:
@@ -1365,6 +1566,7 @@ def run_kaggle_pipeline(
         num_workers=runtime_num_workers,
         reranker_batch_size=int(reranker_cfg.get("inference_batch_size") or reranker_cfg.get("batch_size", 16)),
         reranker_max_length=int(reranker_cfg.get("max_length", 384)),
+        allow_stage_reuse=bool(allow_stage_reuse) and not (is_full or is_gpu_smoke),
     )
     cv_report = oof_runner.run()
     oof_cv_time = max(0.001, time.perf_counter() - t_oof0)
@@ -1395,11 +1597,15 @@ def run_kaggle_pipeline(
                 qrels_dict[str(r["query_id"])].append(str(r["doc_id"]))
 
             fusion_final_dir = checkpoints_dir / "fusion_final"
+            # F7: FULL confirmation uses the predeclared fixed RRF policy (no
+            # outer-label fitting/early-stopping/selection). Bounded smoke keeps
+            # the development selection path.
             fusion_report = train_and_evaluate_fusion_cv(
                 oof_df=oof_df,
                 qrels_dict=qrels_dict,
                 output_dir=fusion_final_dir,
                 num_boost_round=100 if not (is_smoke or is_gpu_smoke) else 10,
+                fusion_policy="predeclared_rrf" if is_full else "select_using_outer_labels",
             )
     fusion_time = max(0.001, time.perf_counter() - t_fus0)
     stage_timings.record("fusion_training", elapsed_seconds=fusion_time, cache_hit=False)
@@ -1483,16 +1689,102 @@ def run_kaggle_pipeline(
                 raise RuntimeError(f"FULL mode requires >=99% negative pair coverage, got {pair_coverage_audit['negative_coverage_pct']}%")
 
     # 10c. Train Final LoRA Reranker on GPU 1
+    # F4: completed-stage reuse DISABLED by default (and never in FULL/gpu_smoke
+    # until the F4 contract is complete). Modal uses a fresh UUID attempt dir per
+    # invocation (no cross-attempt resume). Explicit opt-in only for bounded dev.
     final_reranker_dir = checkpoints_dir / "reranker_final"
     final_complete_file = final_reranker_dir / "complete.json"
     reusing_final_reranker = False
-    if final_complete_file.is_file() and (final_reranker_dir / "adapter_config.json").is_file():
+    _final_reuse_allowed = bool(allow_stage_reuse) and not (is_full or is_gpu_smoke)
+    if _final_reuse_allowed and final_complete_file.is_file() and (final_reranker_dir / "adapter_config.json").is_file():
         try:
-            final_reranker_report = json.loads(final_complete_file.read_text(encoding="utf-8"))
-            print(f"[+] Reusing existing final reranker model checkpoint from {final_reranker_dir}")
-            stage_timings.record("final_reranker_training", elapsed_seconds=0.001, cache_hit=True)
-            reusing_final_reranker = True
-        except Exception:
+            _candidate_report = json.loads(final_complete_file.read_text(encoding="utf-8"))
+            _reuse_ok = True
+            _reuse_reason = ""
+            _expected_base = "mock" if is_smoke else "BAAI/bge-reranker-v2-m3"
+            if _candidate_report.get("status") not in ("completed", "PASS"):
+                _reuse_ok = False
+                _reuse_reason = f"status={_candidate_report.get('status')}"
+            elif str(_candidate_report.get("base_model") or "") != _expected_base:
+                # Allow a recorded local snapshot path only when it exists.
+                _manifest_base = str(_candidate_report.get("base_model") or "")
+                try:
+                    _is_local = Path(_manifest_base).expanduser().is_dir()
+                except Exception:
+                    _is_local = False
+                if not (_is_local and _expected_base != "mock"):
+                    _reuse_ok = False
+                    _reuse_reason = f"base_model mismatch (expected {_expected_base}, got {_manifest_base})"
+            if _reuse_ok and _expected_base != "mock":
+                try:
+                    from src.models.bootstrap import MODEL_REGISTRY as _REG
+
+                    _expected_rev = (_REG.get(_expected_base) or {}).get("revision")
+                except Exception:
+                    _expected_rev = None
+                _manifest_rev = (
+                    _candidate_report.get("base_model_revision")
+                    or _candidate_report.get("revision")
+                    or _candidate_report.get("reranker_revision")
+                )
+                if not _manifest_rev:
+                    _reuse_ok = False
+                    _reuse_reason = "base_model_revision missing"
+                elif _expected_rev and str(_manifest_rev).strip() != str(_expected_rev).strip():
+                    _reuse_ok = False
+                    _reuse_reason = f"base_model_revision mismatch (expected {_expected_rev}, got {_manifest_rev})"
+            if _reuse_ok:
+                _weights = final_reranker_dir / "adapter_model.safetensors"
+                if not _weights.exists():
+                    _weights = final_reranker_dir / "adapter_model.bin"
+                if not _weights.is_file():
+                    _reuse_ok = False
+                    _reuse_reason = "adapter weights missing"
+                else:
+                    _recorded_sha = _candidate_report.get("adapter_checksum")
+                    if _recorded_sha:
+                        import hashlib as _hl
+
+                        _actual_sha = _hl.sha256(_weights.read_bytes()).hexdigest()
+                        if _actual_sha != _recorded_sha:
+                            _reuse_ok = False
+                            _reuse_reason = "adapter checksum mismatch"
+                    if int(_candidate_report.get("optimizer_steps", _candidate_report.get("global_steps", 0)) or 0) <= 0:
+                        _reuse_ok = False
+                        _reuse_reason = "optimizer_steps <= 0"
+                    if float(_candidate_report.get("param_diff", 0) or 0) <= 0:
+                        _reuse_ok = False
+                        _reuse_reason = "param_diff <= 0"
+            if _reuse_ok and not df_queries.empty:
+                _expected_q = len(df_queries)
+                _manifest_q = int(
+                    _candidate_report.get("unique_training_queries", 0)
+                    or _candidate_report.get("eligible_training_queries", 0)
+                    or 0
+                )
+                # Full runs must cover all training queries; smoke runs cover a bounded subset.
+                if is_full and _manifest_q != _expected_q:
+                    _reuse_ok = False
+                    _reuse_reason = f"query-count mismatch (expected {_expected_q}, got {_manifest_q})"
+            if _reuse_ok and final_pairs_file.exists():
+                try:
+                    _pair_rows = len(pd.read_parquet(final_pairs_file, columns=["query_id"]))
+                    _manifest_pairs = int(_candidate_report.get("pair_count", _candidate_report.get("input_pair_count", 0)) or 0)
+                    if _manifest_pairs and _pair_rows != _manifest_pairs:
+                        _reuse_ok = False
+                        _reuse_reason = f"pair-count mismatch (file={_pair_rows} manifest={_manifest_pairs})"
+                except Exception:
+                    pass
+            if _reuse_ok:
+                final_reranker_report = _candidate_report
+                print(f"[+] Reusing existing final reranker model checkpoint from {final_reranker_dir} (identity-verified)")
+                stage_timings.record("final_reranker_training", elapsed_seconds=0.001, cache_hit=True)
+                reusing_final_reranker = True
+            else:
+                print(f"[-] Final adapter reuse rejected ({_reuse_reason}); retraining.")
+                reusing_final_reranker = False
+        except Exception as _e:
+            print(f"[-] Final adapter reuse validation failed ({type(_e).__name__}); retraining.")
             reusing_final_reranker = False
 
     if not reusing_final_reranker:
@@ -1570,6 +1862,15 @@ def run_kaggle_pipeline(
         reranker_batch_size=int(reranker_cfg.get("inference_batch_size") or reranker_cfg.get("batch_size", 16)),
         reranker_max_length=int(reranker_cfg.get("max_length", 384)),
         precision=_prec_norm,
+        reranker_revision=(
+            None
+            if is_smoke
+            else (
+                final_reranker_report.get("base_model_revision")
+                if "final_reranker_report" in locals() and isinstance(final_reranker_report, dict)
+                else None
+            )
+        ),
     )
     final_audit_report = pipeline.audit_parameters(
         output_json=final_audit_json,

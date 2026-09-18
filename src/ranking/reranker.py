@@ -28,8 +28,10 @@ class CrossEncoderReranker:
         batch_size: int = 16,
         max_length: int = 384,
         precision: str | None = None,
+        revision: str | None = None,
     ):
         self.model_name = str(model_name)
+        self.revision = str(revision).strip() if revision else None
         self.adapter_path = Path(adapter_path).expanduser() if adapter_path is not None else None
         self.model_path = self._resolve_model_path(model_path, manifest_path)
         self.local_files_only = (
@@ -89,6 +91,97 @@ class CrossEncoderReranker:
         """Explicitly instantiate and load tokenizer and model onto device."""
         self._load_model()
 
+    @staticmethod
+    def _is_existing_local_dir(source: str) -> bool:
+        try:
+            return Path(str(source)).expanduser().is_dir()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _looks_like_local_path(source: str) -> bool:
+        s = str(source or "")
+        if s == "mock" or not s:
+            return False
+        if s.startswith(("/", "./", "../", "~")):
+            return True
+        for marker in (
+            "artifacts/",
+            "/artifacts/",
+            "/kaggle/",
+            "/root/",
+            "/tmp/",
+            "/snapshots/",
+            "huggingface",
+        ):
+            if marker in s:
+                return True
+        return False
+
+    @staticmethod
+    def _pinned_revision_for(model_id: str) -> str | None:
+        try:
+            from src.models.bootstrap import MODEL_REGISTRY
+
+            entry = MODEL_REGISTRY.get(str(model_id), {})
+            rev = entry.get("revision") if isinstance(entry, Mapping) else None
+            return str(rev).strip() if rev else None
+        except Exception:
+            return None
+
+    def _resolve_base_revision(
+        self,
+        base_model_source: str,
+        manifest_revision: str | None = None,
+    ) -> str | None:
+        """Resolve the immutable base-model revision for HF-hub loads.
+
+        Local-directory sources and ``mock`` never use a revision. Explicit
+        ``revision=`` wins, then the adapter training manifest, then the
+        pinned registry entry for the base model id.
+        """
+        source = str(base_model_source or "")
+        if source == "mock" or not source:
+            return None
+        if self._is_existing_local_dir(source):
+            return None
+        if self.revision:
+            return self.revision
+        if manifest_revision:
+            cleaned = str(manifest_revision).strip()
+            if cleaned:
+                return cleaned
+        return self._pinned_revision_for(source)
+
+    def _effective_base_source(
+        self,
+        base_model_source: str,
+        manifest_revision: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Return ``(effective_source, revision)`` handling stale local paths.
+
+        Training may record a machine-local snapshot path in
+        ``training_manifest.json``. When that path does not exist on the
+        reload machine, fall back to the logical ``model_name`` (HF id) plus
+        the pinned/manifest revision instead of failing on a stale path.
+        """
+        source = str(base_model_source or "")
+        if source == "mock" or not source:
+            return source, None
+        if self._is_existing_local_dir(source):
+            return source, None
+        if self._looks_like_local_path(source):
+            logical = str(self.model_name or "")
+            if logical and logical != "mock" and not self._is_existing_local_dir(logical):
+                if not self._looks_like_local_path(logical) or self._is_existing_local_dir(logical):
+                    return logical, self._resolve_base_revision(logical, manifest_revision)
+                # Logical is also a stale path; keep original source but try
+                # manifest/registry revision for a hub id fallback below.
+                pass
+            # If logical is unusable, keep original source; revision resolution
+            # below will still attempt manifest then registry.
+        return source, self._resolve_base_revision(source, manifest_revision)
+
     def _load_model(self) -> None:
         if self.model is not None or self.score_fn is not None:
             return
@@ -119,13 +212,27 @@ class CrossEncoderReranker:
                     pass
 
             manifest_file = adapter_dir / "training_manifest.json"
+            manifest_revision: str | None = None
             if manifest_file.is_file():
                 try:
                     m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
                     if "base_model" in m_data and m_data["base_model"]:
                         base_model_source = m_data["base_model"]
+                    for rev_key in ("base_model_revision", "revision", "reranker_revision", "base_model_rev"):
+                        rev_val = m_data.get(rev_key)
+                        if rev_val:
+                            manifest_revision = str(rev_val).strip() or None
+                            if manifest_revision:
+                                break
                 except Exception:
                     pass
+
+            base_model_source, base_revision = self._effective_base_source(
+                base_model_source, manifest_revision
+            )
+            base_kwargs: dict[str, Any] = {"local_files_only": self.local_files_only}
+            if base_revision:
+                base_kwargs["revision"] = base_revision
 
             if base_model_source == "mock":
                 import tempfile
@@ -155,18 +262,24 @@ class CrossEncoderReranker:
                     self.tokenizer = AutoTokenizer.from_pretrained(str(adapter_dir), **load_kwargs)
                 except Exception:
                     try:
-                        self.tokenizer = AutoTokenizer.from_pretrained(base_model_source, **load_kwargs)
+                        self.tokenizer = AutoTokenizer.from_pretrained(base_model_source, **base_kwargs)
                     except Exception as e:
-                        raise RuntimeError(f"Failed to load tokenizer for real base model '{base_model_source}': {e}") from e
+                        raise RuntimeError(
+                            f"Failed to load tokenizer for real base model '{base_model_source}' "
+                            f"(revision={base_kwargs.get('revision')}): {e}"
+                        ) from e
 
                 try:
                     base_model = AutoModelForSequenceClassification.from_pretrained(
                         base_model_source,
                         num_labels=1,
-                        **load_kwargs,
+                        **base_kwargs,
                     )
                 except Exception as e:
-                    raise RuntimeError(f"Failed to load real base model '{base_model_source}': {e}") from e
+                    raise RuntimeError(
+                        f"Failed to load real base model '{base_model_source}' "
+                        f"(revision={base_kwargs.get('revision')}): {e}"
+                    ) from e
 
                 from peft import PeftModel
 
@@ -191,19 +304,34 @@ class CrossEncoderReranker:
             self.tokenizer = BertTokenizerFast(vocab_file=str(tmp_vocab))
         else:
             model_source = str(self.model_path) if self.model_path is not None else self.model_name
+            direct_kwargs: dict[str, Any] = {"local_files_only": self.local_files_only}
+            direct_revision: str | None = None
+            if not self._is_existing_local_dir(model_source):
+                if self.revision:
+                    direct_revision = self.revision
+                else:
+                    direct_revision = self._pinned_revision_for(model_source)
+                if direct_revision:
+                    direct_kwargs["revision"] = direct_revision
             try:
-                self.tokenizer = AutoTokenizer.from_pretrained(model_source, **load_kwargs)
+                self.tokenizer = AutoTokenizer.from_pretrained(model_source, **direct_kwargs)
             except Exception as e:
-                raise RuntimeError(f"Failed to load tokenizer for real model '{model_source}': {e}") from e
+                raise RuntimeError(
+                    f"Failed to load tokenizer for real model '{model_source}' "
+                    f"(revision={direct_kwargs.get('revision')}): {e}"
+                ) from e
 
             try:
                 self.model = AutoModelForSequenceClassification.from_pretrained(
                     model_source,
                     num_labels=1,
-                    **load_kwargs,
+                    **direct_kwargs,
                 )
             except Exception as e:
-                raise RuntimeError(f"Failed to load real model '{model_source}': {e}") from e
+                raise RuntimeError(
+                    f"Failed to load real model '{model_source}' "
+                    f"(revision={direct_kwargs.get('revision')}): {e}"
+                ) from e
 
         self.model.to(self.device)
         self.model.eval()

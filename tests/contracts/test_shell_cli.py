@@ -483,3 +483,129 @@ def test_new_and_upload_timeout_validation(tmp_path):
     res = _run_wrapper(repo, bin_dir, extra_env={"COLAB_UPLOAD_TIMEOUT": "nan"})
     assert res.returncode == 2
     assert "new" not in _log_text(log)
+
+
+def _init_git_fixture(repo: Path) -> str:
+    env = os.environ.copy()
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CEILING_DIRECTORIES"] = str(repo.parent.parent)
+    subprocess.check_output(["git", "init", "-q"], cwd=str(repo), env=env)
+    subprocess.check_output(["git", "config", "user.email", "t@t.t"], cwd=str(repo), env=env)
+    subprocess.check_output(["git", "config", "user.name", "t"], cwd=str(repo), env=env)
+    subprocess.check_output(["git", "add", "."], cwd=str(repo), env=env)
+    subprocess.check_output(["git", "commit", "-qm", "init"], cwd=str(repo), env=env)
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(repo), env=env, text=True).strip()
+    return head
+
+
+def _run_wrapper_sha(repo: Path, bin_dir: Path, sha: str | None, extra_env: dict | None = None):
+    env_extra = dict(extra_env or {})
+    if sha is None:
+        # No LEGALIR_COMMIT_SHA: wrapper falls back to git HEAD.
+        env = os.environ.copy()
+        env["PATH"] = str(bin_dir) + ":" + env.get("PATH", "")
+        env["PYTHON_BIN"] = str(bin_dir / "py_stub")
+        env["CLI_TIMEOUT_PYTHON"] = str(REAL_PYTHON)
+        env.pop("LEGALIR_COMMIT_SHA", None)
+        env["GIT_CEILING_DIRECTORIES"] = str(repo.parent)
+        env.update(env_extra)
+        script = repo / "scripts/colab/run_colab_cli.sh"
+        return subprocess.run([str(script), "A100"], cwd=str(repo), env=env,
+                              capture_output=True, text=True, timeout=60)
+    env_extra["LEGALIR_COMMIT_SHA"] = sha
+    return _run_wrapper(repo, bin_dir, extra_env=env_extra)
+
+
+def test_dirty_untracked_blocks_allocation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    head = _init_git_fixture(repo)
+    (repo / "untracked_runtime.py").write_text("x=1\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper_sha(repo, bin_dir, head)
+    assert res.returncode == 2
+    assert "dirty" in ((res.stdout or "") + (res.stderr or "")).lower()
+    text = _log_text(log)
+    assert "new" not in text and "upload" not in text and "exec" not in text
+
+
+def test_dirty_modified_blocks_allocation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    head = _init_git_fixture(repo)
+    (repo / "notebooks/colab_a100_train.ipynb").write_text('{"cells":[]}  ', encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper_sha(repo, bin_dir, head)
+    assert res.returncode == 2
+    text = _log_text(log)
+    assert "new" not in text and "upload" not in text and "exec" not in text
+
+
+def test_dirty_staged_blocks_allocation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    head = _init_git_fixture(repo)
+    (repo / "staged.py").write_text("x=1\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["GIT_CEILING_DIRECTORIES"] = str(repo.parent.parent)
+    subprocess.check_output(["git", "add", "staged.py"], cwd=str(repo), env=env)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper_sha(repo, bin_dir, head)
+    assert res.returncode == 2
+    text = _log_text(log)
+    assert "new" not in text and "upload" not in text and "exec" not in text
+
+
+def test_dirty_deleted_blocks_allocation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    head = _init_git_fixture(repo)
+    (repo / "notebooks/colab_a100_train.ipynb").unlink()
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper_sha(repo, bin_dir, head)
+    assert res.returncode == 2
+    text = _log_text(log)
+    assert "new" not in text and "upload" not in text and "exec" not in text
+
+
+def test_clean_git_tree_reaches_dispatch(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    head = _init_git_fixture(repo)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {"FAKE_EXEC_RC": "0"})
+    res = _run_wrapper_sha(repo, bin_dir, head)
+    assert res.returncode == 0
+    assert "new" in _log_text(log)
+
+
+def test_sha_mismatch_blocks_allocation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    _init_git_fixture(repo)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper_sha(repo, bin_dir, "b" * 40)
+    assert res.returncode == 2
+    assert "new" not in _log_text(log)
+
+
+def test_invalid_sha_blocks_allocation(tmp_path):
+    repo = _make_fixture_repo(tmp_path)
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "colab.log"
+    cap = tmp_path / "cap"
+    _write_stubs(bin_dir, log, cap, {})
+    res = _run_wrapper_sha(repo, bin_dir, "not-a-sha")
+    assert res.returncode == 2
+    assert "new" not in _log_text(log)

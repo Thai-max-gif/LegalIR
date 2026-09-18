@@ -1,155 +1,83 @@
-# Reproducible Training Workflow (Step-by-Step Guide)
+# Reproducible Training Workflow
 
-**Current Status (Updated 2026-09-17):**
-- **Runtime SHA:** `0ca7c135bcefb58b7fcb4f18ed9035a4e06d9428`
-- **Release SHA:** `aadd3f242f6258b2bacba5feef4783ccf373d84f`
-- **Stage 1 (Local Pre-Push):** PASSED (467/467 tests, zero drift, <4B parameter budget).
-- **Stage 2 (GitHub CI):** PASSED (Workflow run `35220762427` green on main).
-- **Stage 3 (Kaggle 2×T4 Smoke Gate):** PASSED on live hardware (Kernel Version 55, $\Delta w = 279.72 > 0$, $t = 31.63s$).
-- **Stage 4 (A100 Production Training):** Ready for execution on Modal (`scripts/modal/run_modal_cli.sh`) or Google Colab (`scripts/colab/run_colab_cli.sh A100`).
+Reviewed 2026-09-17. **The current uncommitted repair candidate is not a qualified release.** Read [../fix.md](../fix.md) before starting this sequence. Operational commands and supervision belong in the [A100 launch guide](README_A100_LAUNCH.md).
 
-## 1. Workflow Lifecycle
+## 1. Finish and verify the candidate locally
 
-```
-Data Owner (Kaggle Dataset)
-              │
-              ▼
-Local Pre-Push Gate (python scripts/verify_prepush.py)
-              │
-              ▼
-GitHub Actions CI (PASS: behavioral tests only, not production authorization)
-              │
-              ▼
-Kaggle 2×T4 Smoke Gate (notebooks/kaggle_t4x2_smoke.ipynb -> PASS, sole pre-A100 gate)
-              │
-              ▼
-Freeze Run Tuple (Git SHA + Dataset Hash + Smoke Report + profile digest)
-              │
-              ▼
-A100 Production Run (Modal first via scripts/modal/run_modal_cli.sh,
-                     or Colab fallback via scripts/colab/run_colab_cli.sh A100)
-              │
-              ▼
-Hugging Face Release & Codabench Submission
-```
+Resolve the blockers in `fix.md`, preserve the canonical data and evaluation boundaries, and run:
 
-Strict release validation (`python scripts/verify_release_approval.py --repo-root .`)
-runs separately on the exact evidence-bearing release. A new runtime without
-fresh evidence is expected to pass CI while strict rejects its stale freeze.
-
----
-
-## 2. Stage-by-Stage Operating Instructions
-
-### Stage 1: Local Pre-Push Verification
-Before pushing any code or notebook updates to GitHub, run the local gate:
 ```bash
-python scripts/verify_prepush.py
+.venv/bin/python scripts/verify_prepush.py
+.venv/bin/python scripts/generate_notebooks.py --check-drift
+.venv/bin/python scripts/check_notebook_parity.py
+.venv/bin/python scripts/check_no_fallbacks.py
+.venv/bin/python scripts/audit_parameters.py --check-only
 ```
-This executes:
-1. Python syntax compilation across `src/` and `scripts/`.
-2. Modular pytest suites (`tests/unit`, `tests/contracts`, `tests/dataset`, `tests/notebook`, `tests/parity`, `tests/leakage`, `tests/memory`, `tests/integration`, `tests/release`).
-3. Parameter budget audit (`scripts/audit_parameters.py` < 4B).
-4. Notebook zero-drift check (`scripts/generate_notebooks.py --check-drift`) and parity (`scripts/check_notebook_parity.py`).
-5. Forbidden-fallback scan (`scripts/check_no_fallbacks.py`).
-6. Offline Kaggle pipeline smoke.
-7. Git working tree hygiene.
 
----
+The prepush gate covers compilation, regression suites, notebook checks, parameter budget, fallback policy, offline smoke, and working-tree hygiene. A direct pytest run alone is not the entire prepush gate.
 
-### Stage 2: Kaggle 2×T4 Smoke Gate (B1.1, sole pre-A100 gate)
-1. **Open Notebook on Kaggle**:
-   - URL: `https://www.kaggle.com/code/phucdangg/legalir-training` (or upload `notebooks/kaggle_t4x2_smoke.ipynb`).
-2. **Attach Dataset**:
-   - Kaggle Dataset: `phucdangg/legalir-task1-clean-data` (attached at `/kaggle/input/datasets/phucdangg/legalir-task1-clean-data` or `/kaggle/input/legalir-task1-clean-data`).
-3. **Accelerator**:
-   - Set Accelerator to **GPU T4 × 2**.
-4. **Click "Run All"**:
-   - Execution time: ~3 minutes.
-   - Mines a 50-query leakage-safe subset on the fly.
-   - Runs 3 optimizer updates on `BAAI/bge-reranker-v2-m3` + LoRA.
-   - Asserts finite loss, weight update delta $\Delta w > 0$, and adapter checkpoint save/reload.
-   - Generates `kaggle_t4x2_report.json` with verdict `"PASS"`.
+Review all changed and untracked files. Commit/push only with authorization. Do not discard or stash repairs merely to launch an older release. Generated notebooks must come from `scripts/generate_notebooks.py`, not hand edits.
 
-### Stage 2b: Colab Single-T4 Contract Gate (B1.15) — RETIRED
-Retired. Kaggle T4x2 (Stage 2) is the sole pre-A100 hardware gate. The
-`colab_t4_smoke.ipynb` notebook is no longer generated and the A100 chain does
-not consume `colab_t4_report.json`. (The `run_colab_t4.py` gate script remains
-for manual use only.)
+## 2. Verify CI on the runtime commit
 
----
+Call the finalized runtime commit `R`. Check CI on that exact SHA, not just the newest green badge. Behavioral CI and strict release validation serve different purposes: a new runtime can pass behavioral CI while strict validation correctly rejects evidence belonging to an older runtime.
 
-### Stage 3: A100 Production Training (B1.2)
+## 3. Run Kaggle dual-T4 smoke for R
 
-Repair both backends locally; qualify one candidate; use Modal first unless a
-human chooses otherwise. Do not launch both concurrently.
+This is the sole pre-A100 hardware smoke gate; Kaggle is not a FULL training backend.
 
-#### Option A: Modal (Recommended First Attempt)
+- Notebook: `notebooks/kaggle_t4x2_smoke.ipynb` generated for the candidate.
+- Canonical dataset: `phucdangg/legalir-task1-clean-data`.
+- Accelerator: **two Tesla T4 GPUs**.
+- Verify distinct dense/reranker CUDA device placement, real forward/backward updates, finite loss, positive weight delta, and adapter save/reload.
+- Retrieve the genuine report; verify runtime SHA, dataset/config/profile identities, verdict, and report digest.
+- Do not re-label an older receipt or extrapolate three update steps into a FULL runtime/quality claim.
+
+Smoke allocation/publication still requires the appropriate user authorization. No smoke was launched during this review.
+
+## 4. Create and verify the evidence-bearing release
+
+Bind the genuine report and freeze to `R`. The evidence-bearing release commit `S` may differ from `R` only as allowed by the repository's runtime-to-release lineage validator. Do not bypass that validator, invent an evidence-generation command, or modify report fields to force acceptance.
+
+On clean checkout of `S`:
+
 ```bash
-scripts/modal/run_modal_cli.sh
-scripts/modal/run_modal_cli.sh --hf-allow-public-repo
+.venv/bin/python scripts/verify_release_approval.py --repo-root .
+git status --short
 ```
-- CPU provenance gate runs before image build/dispatch; remote repeats
-  checkout/provenance → HF access → dataset → train.
-- Durable attempt path: `/root/legalir_volume/<sha>/attempts/<id>/` with
-  explicit Volume commits. No resume; final bytes may be lost on hard kill.
-- 5h function timeout caps duration, not spend. Consent defaults private-only.
-- Record app ID, attempt path, image, SHA, start UTC, ceiling. Enforce kill
-  criteria (OOM/nonfinite; >20min without meaningful progress in chatty phases;
-  5h limit; spend ceiling). Confirm app termination via `modal app stop <id> --yes`
-  (verify CLI syntax first), not just client exit.
 
-#### Option B: Colab CLI Fallback (Supervised)
-```bash
-./scripts/colab/run_colab_cli.sh A100
-```
-This script automatically:
-1. Validates mode/tools/deadlines (`COLAB_TIMEOUT` default 18000s = 5h
-   whole-notebook wall clock, enforced externally; the same value is also
-   passed per-cell to `colab exec --timeout`, which alone cannot bound a
-   multi-cell notebook. Setup and bounded-cleanup time are separate. None of
-   these is a billing cap).
-2. Runs local provenance preflight before allocation.
-3. Provisions a unique A100 session (`colab new -s legalir-a100-production-<rand> --gpu A100`).
-4. Uploads allowlisted `.env`, required launch JSON, and gate/freeze overrides
-   (required when present; failure never falls back to different evidence).
-5. Executes `notebooks/colab_a100_train.ipynb` with the 5h wait.
-6. Trains FULL: retrieval/indexing, five fold trainings/evaluations,
-   doc-disjoint training/evaluation, fusion evaluation, final 7,000-query
-   training (≈875 steps), inference, validation, HF artifact + receipt upload,
-   recovery finalization. Five-hour completion is unmeasured, not assured.
-7. Bounded recovery to `artifacts/task1/production/<session>/` (manifest/log +
-   archive or both submissions required for exit 0) and bounded stop (30s).
-   Exit precedence: primary wins; else stop failure=70; else incomplete=74.
-8. Publishes to `https://huggingface.co/dangphuc2109/legalir-task1-reranker`
-   only with explicit consent for public repos; auth always required.
+Verify CI on **S** as well. Record full SHAs and the exact CI URL. Any further runtime edit invalidates reuse of the old runtime receipt and restarts the relevant qualification steps.
 
-Retired: `./scripts/run_colab_cli.sh T4` and any 4-hour/11.1h wording. The old
-`COLAB_TIMEOUT=40000s` (11.1h) exceeded typical VM lifetime and is replaced by
-the 5h default. No promise that FULL fits 5h.
+### What the existing evidence actually covers
 
-#### Option C: Manual Web Interface (Colab, explicit release required)
-1. **Find the evidence-bearing release commit**:
-   - Use the latest `chore(release): evidence bundle for runtime …` commit whose
-     `python scripts/verify_release_approval.py --repo-root .` passes strict
-     verification (CPU-only). Call it `S`. The notebook baked into `S` pins its
-     runtime `R` by design — embedding `S` there would be self-referential — so
-     you must select `S` explicitly at launch; the default pin alone checks out
-     stale evidence and fails strict bootstrap after GPU allocation and installs.
-2. **Open Notebook on Google Colab**:
-   - Open `notebooks/colab_a100_train.ipynb` from commit `S` (generated; do not hand-edit).
-3. **Select Runtime**:
-   - Runtime $\rightarrow$ Change runtime type $\rightarrow$ **NVIDIA A100 GPU** (High-RAM).
-4. **Configure Secrets**:
-   - In the Colab left sidebar 🔑 **Secrets**, add `HF_TOKEN_WRITE` (or `HF_TOKEN`)
-     with write access to `HF_REPO_ID` (defaults to `dangphuc2109/legalir-task1-reranker`),
-     plus Kaggle vars and optionally `HF_ALLOW_PUBLIC_REPO=1` for explicit public
-     opt-in (Secrets win over uploaded `.env`). **Also add `LEGALIR_COMMIT_SHA`
-     set to the full 40-character SHA of `S`.** Without it the notebook refuses
-     to check out anything (fail fast, before installs) instead of silently
-     using the stale runtime pin.
-5. **Click "Run All"**:
-   - Verifies A100 before training (runtime already allocated at this point) and
-     confirms the Kaggle T4x2 gate passed for the selected release.
-   - Executes FULL training as above, validates submission, publishes artifacts
-     with immutable receipts, and finalizes recovery.
+| Item | Reviewed identity |
+|---|---|
+| Committed runtime R | `373e8791917915da36864b7eb9b2f457493b4a0e` |
+| Committed release S | `d39792836482f29bd6d5e691235690c738cdde3d` |
+| Freeze | `artifacts/task1/freeze/production_freeze.json` |
+| Smoke report | `artifacts/task1/gates/kaggle_t4x2_report.json` |
+| Exact-release CI | https://github.com/silent9669/LegalIR/actions/runs/35231283958 |
+
+The report records three optimizer steps in 27.05 seconds on dual T4s. This is the recorded short training interval, not total notebook runtime. These identities do **not** cover the uncommitted repairs reviewed in `fix.md`.
+
+## 5. Qualify A100 resources and completion forecast
+
+After release correctness checks and separate budget approval, measure a bounded real-model workload on the selected Modal or Colab profile. This is not permission for an automatic FULL launch.
+
+Record cold setup/index time, host CPU/RAM, GPU/VRAM, actual batch size, optimizer throughput, end-to-end held-out queries/s, mining time, output delivery time, and immutable model identities. Project all five folds, document-disjoint training/evaluation, final training, inference, validation, and persistence. Count setup/precomputation rather than hiding it outside the cold-run timer.
+
+Use the measured upper estimate plus reserve to decide whether the target fits. If it exceeds the approved window, stop and optimize; do not silently omit folds, shrink retrieval depth, or increase spending. Backend qualification is not automatically transferable to different Colab RAM/CPU allocations.
+
+## 6. Supervise one approved FULL attempt and verify delivery
+
+Use the [launch guide](README_A100_LAUNCH.md), select `S` explicitly, and record backend, attempt/session ID, start UTC, output path, approved ceiling, and stop procedure. Do not auto-retry or launch both providers concurrently.
+
+Success requires more than process exit 0:
+
+- Complete five-fold and document-disjoint evaluation with exact expected query coverage.
+- Dedicated final model, compatible tokenizer/base-model identity, and successful final reload.
+- Valid public submission with complete unique query coverage and valid corpus document IDs.
+- Durable weights, effective configuration, evaluation reports, checksums, manifests, and truthful delivery receipts.
+- Verified provider termination and no hidden active retry.
+
+Later inference may reuse a validated final adapter. That is distinct from full training resume and must not contaminate held-out evaluation. Publication and competition submission are separate outward-facing actions requiring consent.

@@ -131,6 +131,10 @@ def _resolve_volume_mount() -> Path:
     override = getattr(mod, "VOLUME_MOUNT", VOLUME_MOUNT) if mod is not None else VOLUME_MOUNT
     return Path(override)
 
+# NOTE: CPU/RAM are Modal defaults (no explicit cpu/memory reservation).
+# Workload (~934k micro-chunks, multiple indexes, multiprocessing, repeated
+# model/index loads) has no qualified peak-RAM, CPU-availability, or
+# end-to-end completion forecast on A100. Timeout caps duration, not spend.
 @app.function(
     image=image,
     gpu="A100",
@@ -362,6 +366,11 @@ def main(hf_allow_public_repo: bool = False):
     print(f"[*] Dispatching A100 training job to Modal for commit: {expected_sha}")
     print("[*] This process will run remotely on an A100 GPU and automatically terminate after 5 hours max.")
     print("[*] Durable outputs use /root/legalir_volume/<sha>/attempts/<id>/ on the 'legalir-production' Volume.")
+    print("[*] Supervision: default `modal run` is ATTACHED — client disconnect terminates")
+    print("    remote tasks even with a persistent Volume. Keep the client connected (stable")
+    print("    network, machine awake, tmux/screen) until the remote job returns, or dispatch")
+    print("    via the wrapper with explicit `--detach` plus app-ID tracking, log monitoring,")
+    print("    and an explicit stop procedure. Independently confirm app termination.")
     print("[*] NOTE: 5h caps duration, not spend — retries/re-runs bill extra. No checkpoint-resume:")
     print("    a timeout kill still requires a full re-run (Volume holds forensics only).")
     print("[*] Ensure you have created 'kaggle-secret' and 'huggingface-secret' in the Modal dashboard!")

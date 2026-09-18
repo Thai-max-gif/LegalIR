@@ -82,14 +82,21 @@ def train_reranker(
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
-    # Check local base model path or manifest
-    model_name_or_path = cfg.get("base_model_name", "BAAI/bge-reranker-v2-m3")
+    # Logical base-model id (portable) vs actual load path (may be a local snapshot).
+    # The manifest must record the logical id + immutable revision so adapter
+    # reload on another machine resolves the same base weights.
+    logical_model_id = (
+        base_model_name
+        if base_model_name is not None
+        else str(cfg.get("base_model_name", "BAAI/bge-reranker-v2-m3"))
+    )
+    model_name_or_path = logical_model_id
     hf_manifest_path = paths.local_models / "huggingface" / "manifest.json"
     if hf_manifest_path.exists():
         try:
             hf_data = json.loads(hf_manifest_path.read_text(encoding="utf-8"))
-            if model_name_or_path in hf_data and "path" in hf_data[model_name_or_path]:
-                local_path = Path(hf_data[model_name_or_path]["path"])
+            if logical_model_id in hf_data and "path" in hf_data[logical_model_id]:
+                local_path = Path(hf_data[logical_model_id]["path"])
                 if local_path.is_dir():
                     model_name_or_path = str(local_path)
         except Exception as e:
@@ -123,7 +130,8 @@ def train_reranker(
     cfg["max_steps"] = effective_steps
 
     # Load tokenizer and model
-    if model_name_or_path == "mock":
+    resolved_revision: str | None = None
+    if logical_model_id == "mock" or model_name_or_path == "mock":
         import tempfile
         from transformers import BertConfig, BertForSequenceClassification, BertTokenizerFast
 
@@ -143,24 +151,41 @@ def train_reranker(
             vocab_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"] + [f"tok_{i}" for i in range(295)]
             tmp_vocab.write_text("\n".join(vocab_tokens) + "\n", encoding="utf-8")
         tokenizer = BertTokenizerFast(vocab_file=str(tmp_vocab))
+        resolved_revision = None
     else:
-        resolved_revision = cfg.get("revision") or cfg.get("reranker_revision")
+        resolved_revision = (
+            cfg.get("revision")
+            or cfg.get("reranker_revision")
+            or cfg.get("base_model_revision")
+            or cfg.get("base_model_rev")
+        )
+        if resolved_revision is not None:
+            resolved_revision = str(resolved_revision).strip() or None
         if resolved_revision is None:
             try:
                 from src.models.bootstrap import MODEL_REGISTRY
-                if model_name_or_path in MODEL_REGISTRY:
-                    resolved_revision = MODEL_REGISTRY[model_name_or_path].get("revision")
+                if logical_model_id in MODEL_REGISTRY:
+                    resolved_revision = MODEL_REGISTRY[logical_model_id].get("revision")
             except Exception:
                 pass
+        # Only pass revision for Hub ids; local snapshot dirs already pin weights.
+        is_local_dir = False
+        try:
+            is_local_dir = Path(model_name_or_path).expanduser().is_dir()
+        except Exception:
+            is_local_dir = False
         load_kwargs: dict[str, Any] = {}
-        if resolved_revision:
+        if resolved_revision and not is_local_dir:
             load_kwargs["revision"] = resolved_revision
 
-        print(f"Loading base model: {model_name_or_path} (revision={resolved_revision})...")
+        print(f"Loading base model: {model_name_or_path} (logical={logical_model_id} revision={resolved_revision})...")
         try:
             tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, **load_kwargs)
         except Exception as e:
-            raise RuntimeError(f"Failed to load tokenizer for real base model '{model_name_or_path}': {e}") from e
+            raise RuntimeError(
+                f"Failed to load tokenizer for real base model '{model_name_or_path}' "
+                f"(logical={logical_model_id} revision={resolved_revision}): {e}"
+            ) from e
 
         try:
             base_model = AutoModelForSequenceClassification.from_pretrained(
@@ -169,7 +194,10 @@ def train_reranker(
                 **load_kwargs,
             )
         except Exception as e:
-            raise RuntimeError(f"Failed to load real base model '{model_name_or_path}': {e}") from e
+            raise RuntimeError(
+                f"Failed to load real base model '{model_name_or_path}' "
+                f"(logical={logical_model_id} revision={resolved_revision}): {e}"
+            ) from e
 
     trainer = RerankerTrainer(
         model=base_model,
@@ -183,7 +211,11 @@ def train_reranker(
     report = trainer.train(output_dir=out_path)
     if fold is not None:
         report["fold"] = fold
-    report["base_model"] = model_name_or_path
+    # Portable identity: logical Hub id + immutable revision. The local load
+    # path is recorded separately and must not be used as the reload key.
+    report["base_model"] = logical_model_id
+    report["base_model_revision"] = resolved_revision
+    report["base_model_local_path"] = str(model_name_or_path)
     report["output_dir"] = str(out_path)
     report["pairs_file"] = str(pairs_path)
     report["input_pair_count"] = len(pairs_df)

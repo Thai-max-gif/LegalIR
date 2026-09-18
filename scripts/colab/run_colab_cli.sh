@@ -241,6 +241,31 @@ RECOVERY_DIR="artifacts/task1/production/$SESSION"
 NEW_FLAGS=("--gpu" "A100")
 
 EXPECTED_SHA="${LEGALIR_COMMIT_SHA:-$(git rev-parse HEAD)}"
+if ! echo "$EXPECTED_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "[!] LEGALIR_COMMIT_SHA must be an exact 40-char lowercase SHA, got '$EXPECTED_SHA'." >&2
+  PRIMARY_RC=2
+  exit "$PRIMARY_RC"
+fi
+
+# Reject mismatch between selected SHA and local HEAD (matches Modal guard).
+LOCAL_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$LOCAL_HEAD" ] && [ "$LOCAL_HEAD" != "$EXPECTED_SHA" ]; then
+  echo "[!] Selected SHA $EXPECTED_SHA does not match local HEAD $LOCAL_HEAD; refusing to allocate." >&2
+  PRIMARY_RC=2
+  exit "$PRIMARY_RC"
+fi
+
+# Fail-closed working-tree check matching Modal before allocation/upload,
+# including staged, unstaged, deleted and untracked runtime files (ignored
+# credentials excluded by porcelain). Prevents launching a stale remote commit
+# while local repairs remain uncommitted.
+if [ -n "$(git status --porcelain=v1 2>/dev/null)" ]; then
+  echo "[!] Working tree is dirty; commit or stash before Colab dispatch." >&2
+  git status --porcelain=v1 >&2 || true
+  PRIMARY_RC=2
+  exit "$PRIMARY_RC"
+fi
+
 echo "Running local provenance preflight for A100..."
 set +e
 run_fg "$PYTHON_BIN" scripts/colab/bootstrap.py --expected-sha "$EXPECTED_SHA"

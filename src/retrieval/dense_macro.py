@@ -17,6 +17,64 @@ from src.models.device import resolve_device
 DEFAULT_MODEL_NAME = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
 DEFAULT_DIMENSION = 768
 
+_MUTABLE_REVISIONS = {"", "main", "master", "latest", "default"}
+
+
+def is_mutable_revision(rev: Any) -> bool:
+    """Mutable refs (``main``/missing) never establish immutable provenance."""
+    if rev is None:
+        return True
+    s = str(rev).strip()
+    if not s:
+        return True
+    if s.lower() in _MUTABLE_REVISIONS:
+        return True
+    # Immutable pins are 40-char lowercase hex SHAs.
+    if len(s) != 40:
+        return True
+    return not all(c in "0123456789abcdef" for c in s.lower())
+
+
+def pinned_dense_revision(model_name: str) -> str | None:
+    """Registry pin for a dense model id, or ``None`` when unknown."""
+    try:
+        from src.models.bootstrap import MODEL_REGISTRY
+
+        entry = MODEL_REGISTRY.get(str(model_name), {})
+        rev = entry.get("revision") if isinstance(entry, dict) else None
+        rev_s = str(rev).strip() if rev else None
+        if rev_s and not is_mutable_revision(rev_s):
+            return rev_s
+        return None
+    except Exception:
+        return None
+
+
+def resolve_dense_revision(model_name: str, explicit: Any = None) -> str | None:
+    """Resolve the revision to record/use.
+
+    ``mock`` needs no revision. An explicit value (even mutable) is returned
+    as-is so provenance checks fail closed instead of silently substituting the
+    registry pin and relabeling unknown weights. When explicit is ``None``,
+    the registry pin is used; unknown models yield ``None``.
+    """
+    if str(model_name) == "mock":
+        return None
+    if explicit is not None:
+        s = str(explicit).strip()
+        return s or None
+    return pinned_dense_revision(str(model_name))
+
+
+def chunk_ids_digest(chunk_ids: Sequence[Any]) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    for cid in chunk_ids:
+        h.update(str(cid).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
 
 @dataclass
 class DenseEncodeTelemetry:
@@ -635,18 +693,41 @@ class DenseMacroRetriever:
         return self
 
     def save(self, output_dir: str | Path) -> Path:
-        """Save embeddings and chunk metadata to output directory."""
+        """Save embeddings and chunk metadata with immutable provenance.
+
+        Fails closed for real models when the revision is missing/mutable:
+        never relabels unknown weights as newly pinned. ``mock`` needs no pin.
+        """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        resolved_rev = resolve_dense_revision(self.model_name, getattr(self, "revision", None))
+        if str(self.model_name) != "mock" and (resolved_rev is None or is_mutable_revision(resolved_rev)):
+            raise ValueError(
+                f"Refusing to save dense index for '{self.model_name}' without an immutable "
+                f"revision (got {getattr(self, 'revision', None)!r}; registry pin missing/mutable). "
+                "Rebuild with a pinned revision instead of relabeling old vectors."
+            )
+        # Record the resolved pin on the live object so query-cache identity
+        # uses the same validated contract.
+        self.revision = resolved_rev
         if self.embeddings is not None:
             np.save(str(output_dir / "embeddings.npy"), self.embeddings.astype(np.float16))
         meta_df = pd.DataFrame({"chunk_id": self.chunk_ids, "doc_id": self.doc_ids})
         meta_df.to_parquet(output_dir / "chunks_meta.parquet", index=False)
+        emb_arr = np.asarray(self.embeddings) if self.embeddings is not None else None
         manifest = {
             "model_name": self.model_name,
+            "model_revision": resolved_rev,
+            # Legacy alias read by older loaders; always the immutable pin.
+            "revision": resolved_rev,
             "total_chunks": len(self.chunk_ids),
             "dimension": self.dimension,
-            "use_pyvi": self.use_pyvi,
+            "embedding_dim": int(emb_arr.shape[1]) if emb_arr is not None and emb_arr.ndim > 1 else int(self.dimension),
+            "embedding_rows": int(emb_arr.shape[0]) if emb_arr is not None and emb_arr.ndim > 1 else len(self.chunk_ids),
+            "embedding_dtype": str(emb_arr.dtype) if emb_arr is not None else "float16",
+            "chunk_ids_sha256": chunk_ids_digest(self.chunk_ids),
+            "use_pyvi": bool(self.use_pyvi),
+            "max_length": 512,
         }
         (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         return output_dir
@@ -670,12 +751,18 @@ class DenseMacroRetriever:
         model_name = model_name_or_path or model_name
 
         records = cls._records(chunks)
+        resolved_rev = resolve_dense_revision(model_name, revision)
+        if str(model_name) != "mock" and (resolved_rev is None or is_mutable_revision(resolved_rev)):
+            raise ValueError(
+                f"Refusing to build dense index for '{model_name}' without an immutable "
+                f"revision (got {revision!r}). Pass the pinned revision; never relabel old vectors."
+            )
         encoder = cls(
             model_name=model_name,
             dimension=dimension,
             use_pyvi=use_pyvi,
             device=device,
-            revision=revision,
+            revision=resolved_rev,
         )
         embeddings = encoder.encode_corpus(records, batch_size=batch_size, max_length=max_length)
         np.save(str(output_dir / "embeddings.npy"), embeddings.astype(np.float16))
@@ -685,12 +772,18 @@ class DenseMacroRetriever:
         manifest = {
             "model_name": model_name,
             "model_name_or_path": model_name,
-            "revision": revision or getattr(encoder, "revision", None),
+            "model_revision": resolved_rev,
+            "revision": resolved_rev,
             "total_macro_chunks": len(records),
+            "total_chunks": len(records),
             "embedding_dimension": int(embeddings.shape[1]),
+            "dimension": int(embeddings.shape[1]),
+            "embedding_rows": int(embeddings.shape[0]),
+            "embedding_dtype": "float16",
+            "chunk_ids_sha256": chunk_ids_digest(encoder.chunk_ids),
             "dtype": "float16",
             "max_length": max_length,
-            "use_pyvi": use_pyvi,
+            "use_pyvi": bool(use_pyvi),
         }
         (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         return output_dir
@@ -705,27 +798,102 @@ class DenseMacroRetriever:
         model_name_or_path: str | None = None,
         revision: str | None = None,
     ) -> "DenseMacroRetriever":
+        """Load a dense index only when immutable provenance validates.
+
+        Never accepts a missing/mutable (e.g. ``main``) or mismatched revision,
+        and never relabels old vectors with today's registry pin. Callers must
+        pass the expected immutable revision (or rely on the registry pin for
+        the expected model); legacy caches fail closed for rebuild via a fresh
+        output directory.
+        """
         index_dir = Path(index_dir)
+        expected_model = str(model_name_or_path or model_name)
+        if expected_model == "mock":
+            expected_rev: str | None = None
+        elif revision is not None and not is_mutable_revision(revision):
+            expected_rev = str(revision).strip()
+        else:
+            if revision is not None:
+                raise ValueError(
+                    f"Refusing to load dense index for '{expected_model}' with mutable "
+                    f"revision {revision!r}; pass the immutable pin."
+                )
+            expected_rev = pinned_dense_revision(expected_model)
+            if expected_rev is None:
+                raise ValueError(
+                    f"Refusing to load dense index for '{expected_model}' without an immutable "
+                    "expected revision (registry pin missing). Pass revision explicitly."
+                )
         embeddings = np.load(str(index_dir / "embeddings.npy"), mmap_mode="r")
         meta_df = pd.read_parquet(index_dir / "chunks_meta.parquet")
-        model_name = model_name_or_path or model_name
         manifest_path = index_dir / "manifest.json"
-        if revision is None and manifest_path.is_file():
+        manifest_data: dict[str, Any] = {}
+        if manifest_path.is_file():
             try:
                 manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if "revision" in manifest_data and manifest_data["revision"]:
-                    revision = manifest_data["revision"]
-            except Exception:
-                pass
+            except Exception as exc:
+                raise ValueError(f"Dense index manifest unreadable at {manifest_path}: {exc}") from exc
+        else:
+            raise ValueError(f"Dense index manifest missing at {manifest_path}; rebuild with pinned revision.")
+        manifest_model = str(manifest_data.get("model_name") or manifest_data.get("model_name_or_path") or "")
+        if manifest_model and manifest_model != expected_model:
+            raise ValueError(
+                f"Dense index model mismatch (manifest={manifest_model!r} expected={expected_model!r}); rebuild."
+            )
+        manifest_rev = manifest_data.get("model_revision", manifest_data.get("revision"))
+        if expected_model != "mock":
+            if manifest_rev is None or is_mutable_revision(manifest_rev):
+                raise ValueError(
+                    f"Dense index at {index_dir} has missing/mutable revision {manifest_rev!r}; "
+                    "rebuild with immutable provenance instead of relabeling."
+                )
+            if str(manifest_rev).strip() != str(expected_rev).strip():
+                raise ValueError(
+                    f"Dense index revision mismatch (manifest={manifest_rev!r} expected={expected_rev!r}); rebuild."
+                )
+        # Dimension / preprocessing / corpus identity.
+        manifest_dim = manifest_data.get("dimension", manifest_data.get("embedding_dimension"))
+        if manifest_dim is not None and int(manifest_dim) != int(embeddings.shape[1]):
+            raise ValueError(
+                f"Dense index dimension mismatch (manifest={manifest_dim} npy={embeddings.shape[1]}); rebuild."
+            )
+        if "use_pyvi" in manifest_data and bool(manifest_data["use_pyvi"]) != bool(use_pyvi):
+            raise ValueError(
+                f"Dense index preprocessing mismatch (manifest use_pyvi={manifest_data['use_pyvi']!r} "
+                f"requested={use_pyvi!r}); rebuild."
+            )
+        loaded_chunk_ids = meta_df["chunk_id"].astype(str).tolist()
+        loaded_doc_ids = meta_df["doc_id"].astype(str).tolist()
+        manifest_count = manifest_data.get("total_chunks", manifest_data.get("total_macro_chunks"))
+        if manifest_count is not None and int(manifest_count) != len(loaded_chunk_ids):
+            raise ValueError(
+                f"Dense index row-count mismatch (manifest={manifest_count} meta={len(loaded_chunk_ids)}); rebuild."
+            )
+        if int(embeddings.shape[0]) != len(loaded_chunk_ids):
+            raise ValueError(
+                f"Dense index row mismatch (npy rows={embeddings.shape[0]} meta rows={len(loaded_chunk_ids)}); rebuild."
+            )
+        manifest_sha = manifest_data.get("chunk_ids_sha256")
+        if manifest_sha and chunk_ids_digest(loaded_chunk_ids) != str(manifest_sha):
+            raise ValueError("Dense index chunk-identity mismatch; rebuild.")
+        if embeddings.ndim != 2:
+            raise ValueError(f"Dense index embeddings must be 2-D, got ndim={embeddings.ndim}.")
+        try:
+            if not bool(np.isfinite(np.asarray(embeddings)).all()):
+                raise ValueError("Dense index embeddings contain non-finite values.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Dense index integrity check failed: {exc}") from exc
         retriever = cls(
-            model_name=model_name,
+            model_name=expected_model,
             dimension=int(embeddings.shape[1]),
             use_pyvi=use_pyvi,
             device=device,
-            revision=revision,
+            revision=expected_rev,
         )
         retriever._set_embeddings(embeddings)
-        retriever.chunk_ids = meta_df["chunk_id"].astype(str).tolist()
-        retriever.doc_ids = meta_df["doc_id"].astype(str).tolist()
+        retriever.chunk_ids = loaded_chunk_ids
+        retriever.doc_ids = loaded_doc_ids
         retriever._validate_metadata_lengths()
         return retriever

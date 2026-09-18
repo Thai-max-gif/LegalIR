@@ -419,6 +419,7 @@ class LegalIRPipeline:
         reranker_batch_size: int = 16,
         reranker_max_length: int = 384,
         precision: str | None = None,
+        reranker_revision: str | None = None,
     ) -> "LegalIRPipeline":
         """Load fully instantiated pipeline from index and data artifacts."""
         import json
@@ -486,7 +487,14 @@ class LegalIRPipeline:
             dense_path = index_dir / "dense"
         if dense_path.exists():
             try:
-                dense = DenseMacroRetriever.load(dense_path, device=resolved_dense_device)
+                from src.retrieval.dense_macro import pinned_dense_revision as _pinned_rev
+
+                dense = DenseMacroRetriever.load(
+                    dense_path,
+                    model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+                    revision=_pinned_rev("CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"),
+                    device=resolved_dense_device,
+                )
             except Exception:
                 dense = None
         else:
@@ -547,6 +555,41 @@ class LegalIRPipeline:
                     raise ValueError("Strict artifact check failed: unique_training_queries <= 0")
                 if m_data.get("optimizer_steps", 0) <= 0:
                     raise ValueError("Strict artifact check failed: optimizer_steps <= 0")
+                # Base-model identity must match the training base. Checksums
+                # alone cannot detect an upstream weight change.
+                manifest_base = str(m_data.get("base_model") or "")
+                if manifest_base and manifest_base != "mock":
+                    expected_base = str(reranker_model_name or "")
+                    # Allow a recorded local snapshot path only when it exists;
+                    # otherwise require the logical Hub id to match.
+                    if not Path(manifest_base).expanduser().is_dir():
+                        if manifest_base != expected_base:
+                            raise ValueError(
+                                "Strict artifact check failed: adapter base_model "
+                                f"mismatch (expected {expected_base}, got {manifest_base})"
+                            )
+                manifest_rev = (
+                    m_data.get("base_model_revision")
+                    or m_data.get("revision")
+                    or m_data.get("reranker_revision")
+                )
+                if manifest_rev:
+                    manifest_rev = str(manifest_rev).strip()
+                expected_rev = (str(reranker_revision).strip() if reranker_revision else None)
+                if not expected_rev:
+                    try:
+                        from src.models.bootstrap import MODEL_REGISTRY
+
+                        expected_rev = (MODEL_REGISTRY.get(str(reranker_model_name), {}) or {}).get("revision")
+                    except Exception:
+                        expected_rev = None
+                if manifest_rev and expected_rev and manifest_rev != expected_rev:
+                    raise ValueError(
+                        "Strict artifact check failed: adapter base_model_revision "
+                        f"mismatch (expected {expected_rev}, got {manifest_rev})"
+                    )
+                if not manifest_rev:
+                    raise ValueError("Strict artifact check failed: adapter base_model_revision is missing")
             if use_learned_fusion:
                 if fusion_model_path is None:
                     raise FileNotFoundError("Strict artifact check failed: learned fusion requested but fusion_model_path is None")
@@ -601,6 +644,7 @@ class LegalIRPipeline:
                 batch_size=reranker_batch_size,
                 max_length=reranker_max_length,
                 precision=precision,
+                revision=reranker_revision,
             )
         else:
             reranker = None

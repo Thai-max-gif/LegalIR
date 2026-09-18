@@ -157,12 +157,13 @@ def train_final_adapter(
     if diff <= 0:
         raise ValueError(f"Final training failed: param_diff ({diff}) <= 0")
 
-    # Fresh reload adapter
+    # Fresh reload adapter (same immutable base revision as training).
     print(f"[*] Verifying fresh reload of adapter from {out_dir} ...")
     reranker = CrossEncoderReranker(
         model_name=base_model,
         adapter_path=out_dir,
         device=dev,
+        revision=report.get("base_model_revision"),
     )
     reranker.ensure_loaded()
 

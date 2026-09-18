@@ -7,6 +7,7 @@ official Codabench scorer parity, and full metrics reporting.
 from collections import defaultdict
 from datetime import datetime, timezone
 import gc
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,50 @@ from src.retrieval.question_memory import TrainQuestionMemory
 from src.retrieval.types import CandidateRecord
 
 
+def _sha256_sorted_ids(ids) -> str:
+    """Stable SHA-256 over sorted string IDs for resume-identity checks."""
+    joined = ",".join(sorted(str(x) for x in ids))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def _fold_expected_identity(
+    fold_idx: int,
+    fold_info: dict[str, Any],
+    *,
+    smoke: bool,
+    smoke_sample_size: int,
+    reranker_model: str,
+    candidate_k: int,
+    rerank_k: int,
+    precision: str,
+    split_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    raw_train = [str(x) for x in fold_info.get("train_query_ids", fold_info.get("train", []))]
+    raw_val = [str(x) for x in fold_info.get("val_query_ids", fold_info.get("val", []))]
+    if smoke:
+        raw_val = raw_val[: int(smoke_sample_size)]
+    identity: dict[str, Any] = {
+        "fold": int(fold_idx),
+        "train_count": len(raw_train),
+        "val_count": len(raw_val),
+        "train_ids_sha256": _sha256_sorted_ids(raw_train),
+        "val_ids_sha256": _sha256_sorted_ids(raw_val),
+        "reranker_model": str(reranker_model),
+        "candidate_k": int(candidate_k),
+        "rerank_k": int(rerank_k),
+        "precision": str(precision),
+        "smoke": bool(smoke),
+    }
+    try:
+        if isinstance(split_provenance, dict):
+            rnd = (split_provenance.get("random_5fold") or {})
+            if isinstance(rnd, dict) and rnd.get("sha256"):
+                identity["split_random_5fold_sha256"] = str(rnd.get("sha256"))
+    except Exception:
+        pass
+    return identity
+
+
 class OOFRunner:
     """Orchestrates leakage-safe 5-fold OOF cross-validation and feature extraction."""
 
@@ -78,6 +123,7 @@ class OOFRunner:
         num_workers: int | None = None,
         reranker_batch_size: int | None = None,
         reranker_max_length: int | None = None,
+        allow_stage_reuse: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.index_dir = Path(index_dir)
@@ -123,6 +169,11 @@ class OOFRunner:
         self._shared_memory_dense_encoder: DenseMacroRetriever | None = None
         self.smoke = bool(smoke)
         self.smoke_sample_size = int(smoke_sample_size)
+        # F4: completed-stage reuse is DISABLED by default. The F4 identity/
+        # completeness contract is incomplete, so FULL runs must recompute.
+        # Explicit opt-in only for bounded development; never cross-attempt resume
+        # (Modal uses a fresh UUID attempt dir per invocation).
+        self.allow_stage_reuse = bool(allow_stage_reuse)
         self.doc_disjoint = bool(doc_disjoint)
 
         if doc_disjoint_splits_path is not None and Path(doc_disjoint_splits_path).exists():
@@ -245,7 +296,14 @@ class OOFRunner:
             dense_path = dense_dek21 if dense_dek21.exists() else dense_std
             if dense_path.exists() and (dense_path / "embeddings.npy").exists():
                 try:
-                    self.dense = DenseMacroRetriever.load(dense_path, device=self.dense_device)
+                    from src.retrieval.dense_macro import pinned_dense_revision
+
+                    self.dense = DenseMacroRetriever.load(
+                        dense_path,
+                        model_name="CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2",
+                        revision=pinned_dense_revision("CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"),
+                        device=self.dense_device,
+                    )
                 except Exception as e:
                     print(f"Warning: Dense retriever could not be loaded from {dense_path}: {e}")
                     self.dense = None
@@ -313,6 +371,193 @@ class OOFRunner:
         # Strict fold isolation verification
         verify_fold_isolation(folds, self.qrels_map)
         return folds
+
+    def _expected_fold_identity(self, fold_idx: int, fold_info: dict[str, Any]) -> dict[str, Any]:
+        return _fold_expected_identity(
+            fold_idx,
+            fold_info,
+            smoke=self.smoke,
+            smoke_sample_size=self.smoke_sample_size,
+            reranker_model=self.reranker_model,
+            candidate_k=self.candidate_k,
+            rerank_k=self.rerank_k,
+            precision=self.precision,
+            split_provenance=self.split_provenance,
+        )
+
+    def resolved_run_config(self) -> dict[str, Any]:
+        """Effective configuration actually used (never budget from YAML alone).
+
+        FULL orchestration uses 150/50 while algorithm YAML specifies 100/30;
+        record the resolved values plus model pins and a stable hash so every
+        receipt binds the same contract.
+        """
+        from src.retrieval.dense_macro import pinned_dense_revision as _pinned_dense
+
+        dense_model = "CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2"
+        try:
+            from src.models.bootstrap import MODEL_REGISTRY as _REG
+
+            reranker_rev = (_REG.get(str(self.reranker_model), {}) or {}).get("revision")
+        except Exception:
+            reranker_rev = None
+        cfg: dict[str, Any] = {
+            "candidate_k": int(self.candidate_k),
+            "rerank_k": int(self.rerank_k),
+            "num_folds": int(self.num_folds),
+            "precision": str(self.precision),
+            "reranker_model": str(self.reranker_model),
+            "reranker_revision": reranker_rev,
+            "dense_model": dense_model,
+            "dense_revision": _pinned_dense(dense_model),
+            "reranker_batch_size": int(self.reranker_batch_size),
+            "reranker_max_length": int(self.reranker_max_length),
+            "smoke": bool(self.smoke),
+            "smoke_sample_size": int(self.smoke_sample_size),
+            "train_reranker_per_fold": bool(self.train_reranker_per_fold),
+            "use_reranker": bool(self.use_reranker),
+            "doc_disjoint": bool(self.doc_disjoint),
+        }
+        try:
+            if isinstance(self.split_provenance, dict):
+                for key in ("random_5fold", "doc_disjoint"):
+                    part = self.split_provenance.get(key) or {}
+                    if isinstance(part, dict) and part.get("sha256"):
+                        cfg[f"split_{key}_sha256"] = str(part["sha256"])
+        except Exception:
+            pass
+        cfg["config_sha256"] = hashlib.sha256(
+            json.dumps(cfg, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        return cfg
+
+    def _try_reuse_completed_fold(
+        self,
+        fold_idx: int,
+        fold_info: dict[str, Any],
+        fold_dir: Path,
+    ) -> tuple[dict[str, list[str]] | None, dict[str, list[str]] | None, list, dict | None]:
+        """Validate persisted fold artifacts against current identity.
+
+        Returns ``(preds, candidates, feature_dfs, metrics)`` on success, else
+        ``(None, None, [], None)`` to force recomputation. Reuse is only valid
+        when ``output_dir`` is explicitly reused (local reruns); Modal launches
+        create a fresh UUID attempt directory per invocation and therefore
+        never hit this path across attempts.
+        """
+        complete_marker = fold_dir / "complete.json"
+        predictions_path = fold_dir / "predictions.parquet"
+        metrics_path = fold_dir / "metrics.json"
+        if not (complete_marker.is_file() and predictions_path.is_file() and metrics_path.is_file()):
+            return None, None, [], None
+        try:
+            complete_data = json.loads(complete_marker.read_text(encoding="utf-8"))
+            if complete_data.get("status") != "COMPLETED":
+                print(f"[-] Fold {fold_idx} marker status is {complete_data.get('status')}; recomputing.")
+                return None, None, [], None
+            if int(complete_data.get("fold", -1)) != int(fold_idx):
+                print(f"[-] Fold {fold_idx} marker fold mismatch; recomputing.")
+                return None, None, [], None
+            expected = self._expected_fold_identity(fold_idx, fold_info)
+            for key in (
+                "train_ids_sha256",
+                "val_ids_sha256",
+                "train_count",
+                "val_count",
+                "reranker_model",
+                "candidate_k",
+                "rerank_k",
+                "precision",
+                "smoke",
+            ):
+                if complete_data.get(key) != expected.get(key):
+                    print(
+                        f"[-] Fold {fold_idx} identity mismatch on '{key}' "
+                        f"(stored={complete_data.get(key)} expected={expected.get(key)}); recomputing."
+                    )
+                    return None, None, [], None
+            exp_split_sha = expected.get("split_random_5fold_sha256")
+            if exp_split_sha and complete_data.get("split_random_5fold_sha256") not in (None, exp_split_sha):
+                if complete_data.get("split_random_5fold_sha256") != exp_split_sha:
+                    print(f"[-] Fold {fold_idx} split SHA mismatch; recomputing.")
+                    return None, None, [], None
+
+            f_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if int(f_metrics.get("fold", fold_idx)) != int(fold_idx):
+                print(f"[-] Fold {fold_idx} metrics fold mismatch; recomputing.")
+                return None, None, [], None
+
+            f_preds_df = pd.read_parquet(predictions_path)
+            f_preds = {
+                str(r["query_id"]): list(r["predicted_doc_ids"]) for r in f_preds_df.to_dict("records")
+            }
+            raw_val = [str(x) for x in fold_info.get("val_query_ids", fold_info.get("val", []))]
+            if self.smoke:
+                raw_val = raw_val[: self.smoke_sample_size]
+            expected_val_set = set(raw_val)
+            if set(f_preds.keys()) != expected_val_set:
+                missing = sorted(expected_val_set - set(f_preds.keys()))[:5]
+                extra = sorted(set(f_preds.keys()) - expected_val_set)[:5]
+                print(
+                    f"[-] Fold {fold_idx} predictions ID mismatch "
+                    f"(missing={missing} extra={extra}); recomputing."
+                )
+                return None, None, [], None
+
+            f_cands: dict[str, list[str]] = {}
+            cands_path = fold_dir / "candidates.parquet"
+            if cands_path.is_file():
+                f_cands_df = pd.read_parquet(cands_path)
+                f_cands = {
+                    str(r["query_id"]): list(r["candidate_doc_ids"])
+                    for r in f_cands_df.to_dict("records")
+                }
+                if set(f_cands.keys()) and set(f_cands.keys()) != expected_val_set:
+                    print(f"[-] Fold {fold_idx} candidates ID mismatch; recomputing.")
+                    return None, None, [], None
+
+            features_path = fold_dir / "features.parquet"
+            f_feat_dfs = [pd.read_parquet(features_path)] if features_path.is_file() else []
+
+            # When fold adapters are trained, require the adapter artifacts to
+            # exist and match the recorded checksum; otherwise recompute.
+            if self.train_reranker_per_fold and self.reranker_model != "mock":
+                adapter_dir = fold_dir / "reranker_adapter"
+                adapter_cfg = adapter_dir / "adapter_config.json"
+                weights = adapter_dir / "adapter_model.safetensors"
+                if not weights.exists():
+                    weights = adapter_dir / "adapter_model.bin"
+                manifest_file = adapter_dir / "training_manifest.json"
+                if not (adapter_cfg.is_file() and weights.is_file() and manifest_file.is_file()):
+                    print(f"[-] Fold {fold_idx} adapter artifacts incomplete; recomputing.")
+                    return None, None, [], None
+                try:
+                    m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                    recorded = f_metrics.get("adapter_checksum") or complete_data.get("adapter_checksum")
+                    if recorded:
+                        actual = hashlib.sha256(weights.read_bytes()).hexdigest()
+                        if actual != recorded:
+                            print(f"[-] Fold {fold_idx} adapter checksum mismatch; recomputing.")
+                            return None, None, [], None
+                    # Base-model identity must also match; checksums alone cannot
+                    # detect an upstream weight change.
+                    manifest_base = str(m_data.get("base_model") or "")
+                    if manifest_base and manifest_base != "mock" and not Path(manifest_base).is_dir():
+                        if manifest_base != str(self.reranker_model):
+                            print(f"[-] Fold {fold_idx} adapter base_model mismatch; recomputing.")
+                            return None, None, [], None
+                except Exception as exc:
+                    print(f"[-] Fold {fold_idx} adapter validation failed ({type(exc).__name__}); recomputing.")
+                    return None, None, [], None
+
+            print(
+                f"[+] Reusing completed Fold {fold_idx} from {fold_dir} "
+                f"(Recall@5: {f_metrics.get('recall@5', 0.0):.4f}; identity-verified)"
+            )
+            return f_preds, f_cands, f_feat_dfs, f_metrics
+        except Exception as e:
+            print(f"[-] Warning: Failed loading completed fold {fold_idx} cache, recomputing: {e}")
+            return None, None, [], None
 
     def run_fold(
         self,
@@ -507,30 +752,24 @@ class OOFRunner:
             print(f"\n>>> Running Fold {f_idx + 1}/{len(active_folds)} (Fold {f_idx})...")
 
             fold_dir = self.output_dir / f"fold_{f_idx}"
-            complete_marker = fold_dir / "complete.json"
             predictions_path = fold_dir / "predictions.parquet"
             features_path = fold_dir / "features.parquet"
             metrics_path = fold_dir / "metrics.json"
 
-            if complete_marker.is_file() and predictions_path.is_file() and metrics_path.is_file():
-                try:
-                    f_metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-                    f_preds_df = pd.read_parquet(predictions_path)
-                    f_preds = {str(r["query_id"]): list(r["predicted_doc_ids"]) for r in f_preds_df.to_dict("records")}
-                    f_cands = {}
-                    cands_path = fold_dir / "candidates.parquet"
-                    if cands_path.is_file():
-                        f_cands_df = pd.read_parquet(cands_path)
-                        f_cands = {str(r["query_id"]): list(r["candidate_doc_ids"]) for r in f_cands_df.to_dict("records")}
-                    f_feat_dfs = [pd.read_parquet(features_path)] if features_path.is_file() else []
-                    print(f"[+] Reusing completed Fold {f_idx} from {fold_dir} (Recall@5: {f_metrics.get('recall@5', 0.0):.4f})")
+            # F4: reuse DISABLED by default. Modal uses a fresh UUID attempt dir
+            # per invocation (no cross-attempt resume); even with an explicitly
+            # reused output_dir, reuse requires opt-in until the F4 contract
+            # (versioned identity + every downstream-required artifact) is complete.
+            if self.allow_stage_reuse:
+                reused = self._try_reuse_completed_fold(f_idx, fold_info, fold_dir)
+                if reused[3] is not None:
+                    f_preds, f_cands, f_feat_dfs, f_metrics = reused
+                    assert f_preds is not None and f_metrics is not None
                     all_oof_predictions.update(f_preds)
-                    all_candidate_pools.update(f_cands)
+                    all_candidate_pools.update(f_cands or {})
                     all_feature_dfs.extend(f_feat_dfs)
                     fold_records.append(f_metrics)
                     continue
-                except Exception as e:
-                    print(f"[-] Warning: Failed loading completed fold {f_idx} cache, recomputing: {e}")
 
             fold_reranker: CrossEncoderReranker | None = None
             pair_mining_sec = 0.0
@@ -576,6 +815,38 @@ class OOFRunner:
                         f"Fold {f_idx} pair isolation failed: "
                         f"unknown={sorted(unknown)[:10]}, leaked={sorted(leaked)[:10]}"
                     )
+                # Missing-query check: isolation alone cannot detect silent
+                # coverage loss (pairs covering only a subset of train queries).
+                # Run the same expected-query audit used for final training.
+                from src.training.trainer import audit_pair_coverage as _audit_fold_pairs
+
+                _fold_audit = _audit_fold_pairs(pairs_df, expected_qids=train_set)
+                _missing = sorted(train_set - pair_qids)[:10]
+                if not self.smoke:
+                    if _fold_audit.get("missing_queries_count", 0) > 0:
+                        raise AssertionError(
+                            f"Fold {f_idx} pair coverage failed: "
+                            f"{_fold_audit.get('missing_queries_count')} expected training queries "
+                            f"have no pairs (e.g. {sorted(train_set - pair_qids)[:10]}). "
+                            f"pos_cov={_fold_audit.get('positive_coverage_pct')}% "
+                            f"neg_cov={_fold_audit.get('negative_coverage_pct')}%"
+                        )
+                    if float(_fold_audit.get("positive_coverage_pct", 0.0)) < 100.0:
+                        raise AssertionError(
+                            f"Fold {f_idx} requires 100% positive pair coverage, "
+                            f"got {_fold_audit.get('positive_coverage_pct')}%"
+                        )
+                    if float(_fold_audit.get("negative_coverage_pct", 0.0)) < 99.0:
+                        raise AssertionError(
+                            f"Fold {f_idx} requires >=99% negative pair coverage, "
+                            f"got {_fold_audit.get('negative_coverage_pct')}%"
+                        )
+                elif _missing and len(train_set) <= 200:
+                    # Smoke runs use bounded subsets; still surface gaps loudly.
+                    print(
+                        f"[!] Fold {f_idx} smoke pair coverage gap: "
+                        f"{len(train_set - pair_qids)} expected queries missing pairs."
+                    )
 
                 adapter_dir = fold_dir / "reranker_adapter"
                 reranker_cfg = self.reranker_config_path or self.config_path or "configs/experiments/reranker_lora.yaml"
@@ -604,6 +875,7 @@ class OOFRunner:
                     batch_size=self.reranker_batch_size,
                     max_length=self.reranker_max_length,
                     precision=self.precision,
+                    revision=train_report.get("base_model_revision"),
                 )
             elif self.use_reranker:
                 fold_reranker = global_reranker
@@ -685,19 +957,38 @@ class OOFRunner:
             if f_feat_dfs:
                 pd.concat(f_feat_dfs, ignore_index=True).to_parquet(features_path, index=False)
             metrics_path.write_text(json.dumps(f_metrics, indent=2), encoding="utf-8")
+            complete_marker = fold_dir / "complete.json"
+            fold_identity = self._expected_fold_identity(f_idx, fold_info)
+            fold_identity.update({
+                "status": "COMPLETED",
+                "queries_count": len(f_preds),
+                "recall@5": f_metrics.get("recall@5", 0.0),
+                "precision@5": f_metrics.get("precision@5", 0.0),
+                "adapter_checksum": f_metrics.get("adapter_checksum"),
+                "timestamp": time.time(),
+            })
             complete_marker.write_text(
-                json.dumps({
-                    "status": "COMPLETED",
-                    "fold": f_idx,
-                    "queries_count": len(f_preds),
-                    "recall@5": f_metrics.get("recall@5", 0.0),
-                    "precision@5": f_metrics.get("precision@5", 0.0),
-                    "timestamp": time.time(),
-                }, indent=2),
+                json.dumps(fold_identity, indent=2),
                 encoding="utf-8",
             )
 
         overall_elapsed = time.time() - total_t0
+
+        # Exact expected-query coverage: scoring population must equal the full
+        # expected held-out set (never just whichever predictions were returned).
+        _expected_oof_ids: set[str] = set()
+        for _fi, _fold_info in enumerate(active_folds):
+            _raw = [str(x) for x in _fold_info.get("val_query_ids", _fold_info.get("val", []))]
+            if self.smoke:
+                _raw = _raw[: self.smoke_sample_size]
+            _expected_oof_ids.update(_raw)
+        if set(all_oof_predictions.keys()) != _expected_oof_ids:
+            _missing = sorted(_expected_oof_ids - set(all_oof_predictions.keys()))[:10]
+            _extra = sorted(set(all_oof_predictions.keys()) - _expected_oof_ids)[:10]
+            raise AssertionError(
+                f"OOF prediction coverage failed: expected {len(_expected_oof_ids)} queries, "
+                f"got {len(all_oof_predictions)} (missing={_missing} extra={_extra})."
+            )
 
         # Global aggregate evaluation across all OOF queries
         all_gold = {qid: self.qrels_map[qid] for qid in all_oof_predictions.keys()}
@@ -730,7 +1021,15 @@ class OOFRunner:
         rerank_opt_steps_total = sum(f.get("reranker_optimizer_steps", 0) for f in fold_records)
         pair_mining_sec_total = sum(f.get("pair_mining_seconds", 0.0) for f in fold_records)
 
+        resolved_cfg = self.resolved_run_config()
+        print(
+            f"[Config] FULL effective: candidate_k={resolved_cfg['candidate_k']} "
+            f"rerank_k={resolved_cfg['rerank_k']} folds={resolved_cfg['num_folds']} "
+            f"precision={resolved_cfg['precision']} sha={resolved_cfg['config_sha256'][:12]}..."
+        )
         cv_report = {
+            "resolved_config": resolved_cfg,
+            "resolved_config_sha256": resolved_cfg["config_sha256"],
             "mean_recall@5": float(np.mean(rec5_scores)),
             "std_recall@5": float(np.std(rec5_scores)),
             "mean_precision@5": float(np.mean(prec5_scores)),
@@ -831,11 +1130,33 @@ class OOFRunner:
         report_path = self.output_dir / "doc_disjoint_report.json"
         doc_disjoint_dir = self.output_dir / "doc_disjoint"
         dj_complete_marker = doc_disjoint_dir / "complete.json"
-        if dj_complete_marker.is_file() and report_path.is_file():
+        # F4: disjoint reuse also gated on explicit opt-in.
+        if self.allow_stage_reuse and dj_complete_marker.is_file() and report_path.is_file():
             try:
+                _dj_complete = json.loads(dj_complete_marker.read_text(encoding="utf-8"))
+                if _dj_complete.get("status") != "COMPLETED":
+                    raise ValueError(f"status={_dj_complete.get('status')}")
+                # Identity check: split SHAs and config must match current run.
+                _exp_split_sha = None
+                try:
+                    if isinstance(self.split_provenance, dict):
+                        _dj_prov = (self.split_provenance.get("doc_disjoint") or {})
+                        if isinstance(_dj_prov, dict) and _dj_prov.get("sha256"):
+                            _exp_split_sha = str(_dj_prov.get("sha256"))
+                except Exception:
+                    pass
+                if _exp_split_sha and _dj_complete.get("split_doc_disjoint_sha256") not in (None, _exp_split_sha):
+                    if _dj_complete.get("split_doc_disjoint_sha256") != _exp_split_sha:
+                        raise ValueError("split SHA mismatch")
+                if _dj_complete.get("reranker_model") not in (None, str(self.reranker_model)):
+                    if _dj_complete.get("reranker_model") != str(self.reranker_model):
+                        raise ValueError("reranker_model mismatch")
+                if _dj_complete.get("smoke") not in (None, bool(self.smoke)):
+                    if bool(_dj_complete.get("smoke")) != bool(self.smoke):
+                        raise ValueError("smoke-mode mismatch")
                 final_report = json.loads(report_path.read_text(encoding="utf-8"))
                 self.doc_disjoint_report = final_report
-                print(f"[+] Reusing completed doc-disjoint evaluation from {report_path}")
+                print(f"[+] Reusing completed doc-disjoint evaluation from {report_path} (identity-verified)")
                 return final_report
             except Exception as e:
                 print(f"[-] Warning: Failed loading doc-disjoint report cache, recomputing: {e}")
@@ -951,6 +1272,25 @@ class OOFRunner:
                     f"Doc-disjoint pair isolation failed: "
                     f"unknown={sorted(dj_unknown)[:10]}, leaked={sorted(dj_leaked)[:10]}"
                 )
+            from src.training.trainer import audit_pair_coverage as _audit_dj_pairs
+
+            _dj_audit = _audit_dj_pairs(pairs_df, expected_qids=dj_train_set)
+            if not self.smoke:
+                if _dj_audit.get("missing_queries_count", 0) > 0:
+                    raise AssertionError(
+                        f"Doc-disjoint pair coverage failed: "
+                        f"{_dj_audit.get('missing_queries_count')} expected training queries have no pairs."
+                    )
+                if float(_dj_audit.get("positive_coverage_pct", 0.0)) < 100.0:
+                    raise AssertionError(
+                        "Doc-disjoint requires 100% positive pair coverage, "
+                        f"got {_dj_audit.get('positive_coverage_pct')}%"
+                    )
+                if float(_dj_audit.get("negative_coverage_pct", 0.0)) < 99.0:
+                    raise AssertionError(
+                        "Doc-disjoint requires >=99% negative pair coverage, "
+                        f"got {_dj_audit.get('negative_coverage_pct')}%"
+                    )
 
             # Strict doc-disjoint: exclude all held-out validation documents (and duplicate equivalents) from training pairs
             val_gold_docs: set[str] = set()
@@ -1002,6 +1342,7 @@ class OOFRunner:
                 batch_size=self.reranker_batch_size,
                 max_length=self.reranker_max_length,
                 precision=self.precision,
+                revision=dj_train_report.get("base_model_revision"),
             )
 
         # 2. Reranked pass
@@ -1092,11 +1433,22 @@ class OOFRunner:
             json.dump(final_report, f, indent=2)
 
         doc_disjoint_dir.mkdir(parents=True, exist_ok=True)
+        _dj_split_sha = None
+        try:
+            if isinstance(self.split_provenance, dict):
+                _dj_prov = (self.split_provenance.get("doc_disjoint") or {})
+                if isinstance(_dj_prov, dict) and _dj_prov.get("sha256"):
+                    _dj_split_sha = str(_dj_prov.get("sha256"))
+        except Exception:
+            pass
         dj_complete_marker.write_text(
             json.dumps({
                 "status": "COMPLETED",
                 "recall@5": trained_system_metrics["recall@5"],
                 "precision@5": trained_system_metrics["precision@5"],
+                "reranker_model": str(self.reranker_model),
+                "smoke": bool(self.smoke),
+                "split_doc_disjoint_sha256": _dj_split_sha,
                 "timestamp": time.time(),
             }, indent=2),
             encoding="utf-8",

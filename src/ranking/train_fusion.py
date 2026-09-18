@@ -76,10 +76,21 @@ def train_and_evaluate_fusion_cv(
     num_leaves: int = 31,
     feature_cols: list[str] | None = None,
     rrf_weights: Mapping[str, float] | None = None,
+    fusion_policy: str = "select_using_outer_labels",
+    use_outer_eval_for_early_stop: bool = True,
 ) -> dict[str, Any]:
     """Execute 5-fold cross-validation for Learned Ranker vs Weighted RRF.
 
     Strict fold isolation: Fold f model is trained on folds != f only.
+
+    F7 confirmatory protocol:
+    - ``select_using_outer_labels`` (default, development only): current behavior;
+      fits with outer val eval_set/early stopping and selects the winner on outer
+      held-out quality. Results are selection-influenced development measurements,
+      NOT an untouched confirmatory score. The report is marked accordingly.
+    - ``predeclared_rrf`` (confirmation): fixed RRF policy. No LightGBM fitting,
+      no outer-label early stopping, no winner selection. Outer labels are used
+      only by the scorer after predictions are finalized.
     """
     if oof_df.empty or "fold" not in oof_df.columns:
         raise ValueError("oof_df must be non-empty and contain a 'fold' column.")
@@ -99,11 +110,19 @@ def train_and_evaluate_fusion_cv(
 
     target_col = "label" if "label" in oof_df.columns else "target"
 
+    if fusion_policy not in ("select_using_outer_labels", "predeclared_rrf"):
+        raise ValueError(
+            f"Unknown fusion_policy {fusion_policy!r}; expected 'select_using_outer_labels' "
+            "(development only) or 'predeclared_rrf' (confirmation)."
+        )
+
     learned_fold_metrics = []
     rrf_fold_metrics = []
     trained_fold_models = {}
 
     print(f"\nEvaluating Fusion across {len(unique_folds)} folds...")
+    if fusion_policy == "predeclared_rrf":
+        print("[*] F7 fixed policy: predeclared RRF; no outer-label fitting/selection.")
 
     rrf_baseline = ReciprocalRankFusion(weights=rrf_weights)
 
@@ -117,7 +136,18 @@ def train_and_evaluate_fusion_cv(
         train_data = oof_df[train_mask]
         val_data = oof_df[val_mask]
 
-        # 1. Fit Fold-Isolated Learned Ranker
+        if fusion_policy == "predeclared_rrf":
+            # Fixed-policy confirmation: RRF predictions only. Outer labels reach
+            # only the scorer after predictions are finalized.
+            rrf_p, rrf_m = evaluate_features_with_ranker(val_data, rrf_baseline, qrels_dict)
+            rrf_m["fold"] = int(f_idx)
+            rrf_fold_metrics.append(rrf_m)
+            all_rrf_preds.update(rrf_p)
+            print(f"Fold {f_idx}: RRF Recall@5 = {rrf_m['recall@5'] * 100:.2f}% (Prec@5 = {rrf_m['precision@5'] * 100:.2f}%)")
+            continue
+
+        # 1. Fit Fold-Isolated Learned Ranker (development only; outer val labels
+        # influence early stopping and winner selection -- see report flags).
         # Note: LightGBM requires groups sorted consecutively by query_id
         train_data_sorted = train_data.sort_values("query_id")
         val_data_sorted = val_data.sort_values("query_id")
@@ -136,15 +166,23 @@ def train_and_evaluate_fusion_cv(
             learning_rate=learning_rate,
             num_leaves=num_leaves,
         )
-        ranker.fit(
-            X=X_train,
-            y=y_train,
-            groups=train_groups,
-            eval_set=(X_val, y_val),
-            eval_groups=val_groups,
-            num_boost_round=num_boost_round,
-            early_stopping_rounds=10,
-        )
+        if use_outer_eval_for_early_stop:
+            ranker.fit(
+                X=X_train,
+                y=y_train,
+                groups=train_groups,
+                eval_set=(X_val, y_val),
+                eval_groups=val_groups,
+                num_boost_round=num_boost_round,
+                early_stopping_rounds=10,
+            )
+        else:
+            ranker.fit(
+                X=X_train,
+                y=y_train,
+                groups=train_groups,
+                num_boost_round=num_boost_round,
+            )
 
         fold_model_file = output_dir / f"model_fold_{f_idx}.txt"
         ranker.save(fold_model_file)
@@ -168,10 +206,16 @@ def train_and_evaluate_fusion_cv(
             f"RRF Recall@5 = {rrf_m['recall@5'] * 100:.2f}% (Prec@5 = {rrf_m['precision@5'] * 100:.2f}%)"
         )
 
-    # Concat predictions across all held-out folds and evaluate full OOF metrics
-    all_val_qrels = {str(qid): qrels_dict.get(str(qid), []) for qid in all_learned_preds.keys()}
-    learned_overall = evaluate_predictions(y_pred=all_learned_preds, y_true=all_val_qrels)
-    rrf_overall = evaluate_predictions(y_pred=all_rrf_preds, y_true=all_val_qrels)
+    # Concat predictions across all held-out folds and evaluate full OOF metrics.
+    # Outer labels reach ONLY the scorer here, never fitting/selection in fixed mode.
+    if fusion_policy == "predeclared_rrf":
+        all_val_qrels = {str(qid): qrels_dict.get(str(qid), []) for qid in all_rrf_preds.keys()}
+        learned_overall = {"recall@5": 0.0, "precision@5": 0.0}
+        rrf_overall = evaluate_predictions(y_pred=all_rrf_preds, y_true=all_val_qrels)
+    else:
+        all_val_qrels = {str(qid): qrels_dict.get(str(qid), []) for qid in all_learned_preds.keys()}
+        learned_overall = evaluate_predictions(y_pred=all_learned_preds, y_true=all_val_qrels)
+        rrf_overall = evaluate_predictions(y_pred=all_rrf_preds, y_true=all_val_qrels)
 
     learned_overall_rec5 = float(learned_overall.get("recall@5", 0.0))
     learned_overall_prec5 = float(learned_overall.get("precision@5", 0.0))
@@ -187,40 +231,58 @@ def train_and_evaluate_fusion_cv(
     rrf_std_rec5 = float(np.std([m["recall@5"] for m in rrf_fold_metrics])) if rrf_fold_metrics else 0.0
     rrf_mean_prec5 = float(np.mean([m["precision@5"] for m in rrf_fold_metrics])) if rrf_fold_metrics else 0.0
 
-    # Model Selection Gate
-    # Primary criterion: Official Task 1 Recall@5 across concatenated held-out folds
-    learned_wins = (
-        learned_overall_rec5 > rrf_overall_rec5
-        or (np.isclose(learned_overall_rec5, rrf_overall_rec5, atol=1e-6) and learned_overall_prec5 > rrf_overall_prec5)
-    )
+    if fusion_policy == "predeclared_rrf":
+        learned_wins = False
+        selection_protocol = "predeclared_rrf"
+        confirmatory = True
+    else:
+        # Model Selection Gate (development only; uses outer held-out quality).
+        # Primary criterion: Official Task 1 Recall@5 across concatenated held-out folds
+        learned_wins = (
+            learned_overall_rec5 > rrf_overall_rec5
+            or (np.isclose(learned_overall_rec5, rrf_overall_rec5, atol=1e-6) and learned_overall_prec5 > rrf_overall_prec5)
+        )
+        selection_protocol = "select_using_outer_labels"
+        confirmatory = False
 
-    # 4. Train Final Model on All Folds
-    print("\nTraining Final Fusion Model on All Folds...")
-    all_sorted = oof_df.sort_values("query_id")
-    all_groups = all_sorted.groupby("query_id", sort=False).size().values
-    all_X = all_sorted[available_cols]
-    all_y = all_sorted[target_col].values
+    # 4. Train Final Model on All Folds (skipped for fixed RRF: nothing to fit;
+    # fitting on all labels belongs to post-confirmation production, not scoring).
+    full_ranker = None
+    if fusion_policy == "predeclared_rrf":
+        print("\nSkipping final LightGBM fit for predeclared RRF (no learned model).")
+    else:
+        print("\nTraining Final Fusion Model on All Folds...")
+        all_sorted = oof_df.sort_values("query_id")
+        all_groups = all_sorted.groupby("query_id", sort=False).size().values
+        all_X = all_sorted[available_cols]
+        all_y = all_sorted[target_col].values
 
-    full_ranker = LightGBMRanker(
-        feature_cols=available_cols,
-        learning_rate=learning_rate,
-        num_leaves=num_leaves,
-    )
-    full_ranker.fit(all_X, all_y, all_groups, num_boost_round=num_boost_round)
+        full_ranker = LightGBMRanker(
+            feature_cols=available_cols,
+            learning_rate=learning_rate,
+            num_leaves=num_leaves,
+        )
+        full_ranker.fit(all_X, all_y, all_groups, num_boost_round=num_boost_round)
 
-    full_model_file = output_dir / "model_full.txt"
-    full_ranker.save(full_model_file)
-    trained_fold_models["full"] = str(full_model_file)
+        full_model_file = output_dir / "model_full.txt"
+        full_ranker.save(full_model_file)
+        trained_fold_models["full"] = str(full_model_file)
 
-    # If output_dir is not already fusion_final, also export to checkpoints/fusion_final
-    fusion_final_dir = output_dir / "fusion_final" if output_dir.name != "fusion_final" else output_dir
-    fusion_final_dir.mkdir(parents=True, exist_ok=True)
-    full_ranker.save(fusion_final_dir / "model.txt")
-    trained_fold_models["fusion_final"] = str(fusion_final_dir / "model.txt")
+        # If output_dir is not already fusion_final, also export to checkpoints/fusion_final
+        fusion_final_dir = output_dir / "fusion_final" if output_dir.name != "fusion_final" else output_dir
+        fusion_final_dir.mkdir(parents=True, exist_ok=True)
+        full_ranker.save(fusion_final_dir / "model.txt")
+        trained_fold_models["fusion_final"] = str(fusion_final_dir / "model.txt")
 
-    if learned_wins:
+    if fusion_policy == "predeclared_rrf":
+        winning_method = "reciprocal_rank_fusion"
+        winning_model_type = "rrf_weighted"
+        winner_rec5 = rrf_overall_rec5
+        winner_prec5 = rrf_overall_prec5
+        gate_decision = "Predeclared fixed RRF policy (no outer-label fitting/selection; confirmatory)"
+    elif learned_wins:
         winning_method = "learned_ranker"
-        winning_model_type = getattr(full_ranker, "model_type", "lightgbm")
+        winning_model_type = getattr(full_ranker, "model_type", "lightgbm") if full_ranker is not None else "lightgbm"
         winner_rec5 = learned_overall_rec5
         winner_prec5 = learned_overall_prec5
         gate_decision = f"Learned Ranker selected (+{(learned_overall_rec5 - rrf_overall_rec5) * 100:.4f}% Recall@5 vs RRF)"
@@ -233,6 +295,10 @@ def train_and_evaluate_fusion_cv(
 
     print("\n" + "=" * 70)
     print(">> FUSION MODEL SELECTION GATE SUMMARY (5-Fold Cross-Fitted):")
+    if fusion_policy == "predeclared_rrf":
+        print("   Policy: PREDECLARED RRF (confirmatory; no outer-label fitting/selection)")
+    else:
+        print("   Policy: SELECT_USING_OUTER_LABELS (development only; NOT confirmatory)")
     print(f"   Learned Ranker Full OOF Recall@5 : {learned_overall_rec5 * 100:.4f}% (Mean across folds: {learned_mean_rec5 * 100:.4f}% +/- {learned_std_rec5 * 100:.4f}%)")
     print(f"   Weighted RRF   Full OOF Recall@5 : {rrf_overall_rec5 * 100:.4f}% (Mean across folds: {rrf_mean_rec5 * 100:.4f}% +/- {rrf_std_rec5 * 100:.4f}%)")
     print(f"   Winning Method                   : {winning_method} ({gate_decision})")
@@ -243,6 +309,10 @@ def train_and_evaluate_fusion_cv(
     comparison_report = {
         "winning_method": winning_method,
         "winning_model_type": winning_model_type,
+        "selection_protocol": selection_protocol,
+        "confirmatory": confirmatory,
+        "fusion_policy": fusion_policy,
+        "use_outer_eval_for_early_stop": bool(use_outer_eval_for_early_stop),
         "winner_mean_recall@5": winner_rec5,
         "winner_mean_precision@5": winner_prec5,
         "gate_decision": gate_decision,
@@ -274,6 +344,9 @@ def train_and_evaluate_fusion_cv(
         "total_oof_rows": len(oof_df),
         "winning_method": winning_method,
         "winning_model_type": winning_model_type,
+        "selection_protocol": selection_protocol,
+        "confirmatory": confirmatory,
+        "fusion_policy": fusion_policy,
         "winning_metrics": {
             "mean_recall@5": winner_rec5,
             "mean_precision@5": winner_prec5,
