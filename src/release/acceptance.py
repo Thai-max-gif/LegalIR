@@ -80,6 +80,59 @@ def _sha_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def verify_adapter_reload_fresh(
+    adapter_dir: str | Path,
+    model_name: str,
+    revision: str | None,
+    timeout_s: int = 600,
+) -> tuple[bool, str]:
+    """Reload the saved adapter in a FRESH OS process and score one pair.
+
+    Proves the persisted artifact (not in-memory state) loads under the pinned
+    base revision. Returns ``(ok, detail)``; never raises. A missing adapter
+    dir or manifest fails without spawning a process.
+    """
+    import subprocess
+    import sys
+
+    adapter = Path(adapter_dir)
+    if not (adapter / "adapter_config.json").is_file():
+        return False, "adapter_config.json missing"
+    weights = adapter / "adapter_model.safetensors"
+    if not weights.is_file():
+        weights = adapter / "adapter_model.bin"
+    if not weights.is_file():
+        return False, "adapter weights missing"
+    snippet = (
+        "import json;"
+        "from src.ranking.reranker import CrossEncoderReranker;"
+        f"r=CrossEncoderReranker(model_name={model_name!r},adapter_path={str(adapter)!r},"
+        f"device='cpu',revision={revision!r});"
+        "r.ensure_loaded();"
+        "s=r.score_pairs([('fresh reload probe','fresh reload probe')],batch_size=1);"
+        "print(json.dumps({'ok':True,'score':float(s[0])}))"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", snippet],
+            capture_output=True, text=True, timeout=int(timeout_s),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"fresh reload timed out after {timeout_s}s"
+    except Exception as exc:
+        return False, f"fresh reload spawn failed: {type(exc).__name__}"
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "")[-500:]
+        return False, f"fresh reload exited {proc.returncode}: {tail}"
+    try:
+        payload = json.loads((proc.stdout or "").strip().splitlines()[-1])
+        if payload.get("ok") is True:
+            return True, f"fresh reload score={payload.get('score')}"
+    except Exception:
+        pass
+    return False, f"fresh reload unparseable output: {(proc.stdout or '')[-200:]}"
+
+
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -227,11 +280,20 @@ def verify_acceptance(
     if len(per_fold_receipt) != 5:
         fail(f"per_fold must cover five folds (got {len(per_fold_receipt)})")
 
-    # --- Strict gates (no rounding across thresholds) ---
+    # --- Timing endpoints must exist; elapsed must be a finite non-negative
+    # duration strictly under the gate (negative/absent can never pass) ---
+    for endpoint in ("supervisor_start_utc", "supervisor_end_utc"):
+        if not isinstance(receipt.get(endpoint), str) or not receipt[endpoint].strip():
+            fail(f"timing endpoint {endpoint} is absent")
     elapsed = receipt.get("elapsed_seconds")
-    pass_t = isinstance(elapsed, (int, float)) and float(elapsed) < TIME_GATE_SECONDS
-    if not pass_t:
-        fail(f"cold elapsed {elapsed} is not strictly under {TIME_GATE_SECONDS}s")
+    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+        fail(f"cold elapsed {elapsed!r} is not a measured duration")
+        pass_t = False
+    elif not (0 <= float(elapsed) < TIME_GATE_SECONDS):
+        fail(f"cold elapsed {elapsed} is not in [0, {TIME_GATE_SECONDS})s")
+        pass_t = False
+    else:
+        pass_t = True
     pass_q = recomputed_r5 is not None and recomputed_r5 > QUALITY_GATE_RECALL5
     if recomputed_r5 is None:
         fail("quality gate unevaluable (no recomputed score)")
@@ -239,14 +301,17 @@ def verify_acceptance(
         fail(f"pooled official OOF Recall@5 {recomputed_r5:.6f} is not strictly above {QUALITY_GATE_RECALL5}")
 
     # --- Document-disjoint completeness (separate, never blended) ---
+    # An empty report mapping is absent for acceptance purposes: it carries no
+    # recall, counts, or identity to check.
     dj = receipt.get("doc_disjoint") or {}
-    if disjoint_report is None:
+    if not isinstance(disjoint_report, Mapping) or not disjoint_report:
         fail("document-disjoint report is absent")
     elif not dj.get("complete"):
         fail("document-disjoint is not marked complete")
-    if disjoint_report is not None and dj.get("complete"):
+    else:
         try:
-            dj_r5 = float((disjoint_report.get("trained_reranker_system") or {}).get("recall@5", disjoint_report.get("recall@5", 0.0)))
+            dj_sys = disjoint_report.get("trained_reranker_system") or {}
+            dj_r5 = float(dj_sys.get("recall@5", disjoint_report.get("recall@5")))
             details["disjoint_recall@5"] = dj_r5
         except Exception:
             fail("document-disjoint report recall unreadable")
@@ -258,7 +323,11 @@ def verify_acceptance(
         fail("durable delivery is not confirmed")
     if receipt.get("shutdown_confirmed") is not True:
         fail("provider shutdown is not confirmed")
-    if submission is not None:
+    # Submission is a required deliverable: an absent submission can never pass,
+    # and every delivered answer must hold exactly 5 unique valid documents.
+    if not isinstance(submission, Mapping) or not submission:
+        fail("submission is absent")
+    else:
         for qid, val in submission.items():
             ans = val.get("answer") if isinstance(val, Mapping) else val
             if not isinstance(ans, list) or len(ans) != 5 or len({str(x) for x in ans}) != 5:
@@ -267,27 +336,38 @@ def verify_acceptance(
             if any(str(x) not in corpus for x in ans):
                 fail(f"submission query {qid}: invalid document ID")
                 break
+    # Adapter weights must be inventoried WITH a checksum, and checksums are
+    # verified against bytes. Without artifacts_dir there is nothing to verify
+    # against, so the check fails closed instead of passing blind.
     artifacts = receipt.get("artifacts") or []
     if not artifacts:
         fail("artifact inventory is empty")
+    elif artifacts_dir is None:
+        fail("artifact checksums unverified without artifacts_dir")
     else:
-        base = Path(artifacts_dir) if artifacts_dir is not None else None
+        base = Path(artifacts_dir)
         has_weights = False
         for entry in artifacts:
+            if not isinstance(entry, Mapping):
+                fail(f"artifact entry is not an object: {entry!r}")
+                continue
             rel = str(entry.get("path", ""))
             if not rel or rel.startswith("/") or ".." in rel.split("/"):
                 fail(f"artifact path escapes inventory: {rel!r}")
                 continue
             if "adapter_model" in rel:
+                if not entry.get("sha256"):
+                    fail(f"artifact checksum absent: {rel}")
+                    continue
                 has_weights = True
-            if base is not None and entry.get("sha256"):
+            if entry.get("sha256"):
                 target = base / rel
                 if not target.is_file():
                     fail(f"artifact missing: {rel}")
                 elif _sha_file(target) != str(entry["sha256"]):
                     fail(f"artifact checksum mismatch: {rel}")
         if not has_weights:
-            fail("artifact inventory omits final adapter weights")
+            fail("artifact inventory omits final adapter weights with checksum")
 
     verdict = "PASS" if not reasons else ("FAIL" if recomputed_r5 is not None or elapsed is not None else "INCOMPLETE")
     return {

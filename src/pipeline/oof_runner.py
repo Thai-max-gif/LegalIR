@@ -1345,7 +1345,16 @@ class OOFRunner:
                 revision=dj_train_report.get("base_model_revision"),
             )
 
-        # 2. Reranked pass
+        # 2. Reranked pass under the fixed predeclared RRF policy, mirroring
+        # public inference (predict.py): reranked candidates are fused with the
+        # same fixed RRF weights before top-5 selection, so the disjoint score
+        # evaluates the submission scoring policy instead of selector-only order.
+        from src.ranking.fusion import ReciprocalRankFusion
+
+        dj_ranker = ReciprocalRankFusion()
+        dj_train_doc_freq = compute_training_doc_frequencies(
+            {qid: self.qrels_map[qid] for qid in train_ids if qid in self.qrels_map}
+        )
         preds_system: dict[str, list[str]] = {}
         runtimes_system: dict[str, float] = {}
 
@@ -1392,8 +1401,14 @@ class OOFRunner:
             else:
                 reranked_list = [item[2] for item in window_items]
 
-            for (qid, _, _, t_q0), cands in zip(window_items, reranked_list):
-                top5 = self.selector.select(cands)
+            for (qid, q_text, _, t_q0), cands in zip(window_items, reranked_list):
+                ranked = dj_ranker.predict(
+                    cands,
+                    query_id=qid,
+                    query_text=q_text,
+                    doc_freq_map=dj_train_doc_freq,
+                )
+                top5 = self.selector.select(ranked)
                 preds_system[qid] = top5
                 runtimes_system[qid] = time.time() - t_q0
 
@@ -1424,6 +1439,7 @@ class OOFRunner:
             "doc_disjoint_optimizer_steps": dj_opt_steps,
             "doc_disjoint_inference_seconds": round(dj_infer_sec, 3),
             "adapter_path": str(doc_disjoint_adapter_dir) if doc_disjoint_adapter_dir else None,
+            "fusion_policy": "predeclared_rrf",
             "is_smoke_mode": self.smoke,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         }

@@ -75,7 +75,25 @@ def test_forecast_unknown_throughput_fails_closed():
 def test_forecast_budget_flags():
     assert NOMINAL_BUDGET_SECONDS == 270 * 60
     assert STRICT_GATE_SECONDS == 18000
-    fits = forecast_cold_total(setup_index_seconds=100.0)
+    fits = forecast_cold_total(
+        setup_index_seconds=100.0,
+        train_jobs=[{"updates": 10, "sec_per_update": 1.0}],
+    )
+    assert fits["complete_measurements"] is True
     assert fits["fits_nominal_270m"] is True and fits["fits_strict_300m"] is True
     with pytest.raises(ValueError, match="negative"):
         forecast_cold_total(train_jobs=[{"updates": 10, "sec_per_update": -1.0}])
+
+
+def test_forecast_empty_is_unknown_never_fitting():
+    # The reported defect: no measurements yielded total 0 as passing evidence.
+    out = forecast_cold_total()
+    assert out["total_seconds"] == 0
+    assert out["complete_measurements"] is False
+    assert out["fits_nominal_270m"] is False
+    assert out["fits_strict_300m"] is False
+    # Training jobs without evaluation throughput are equally incomplete.
+    out2 = forecast_cold_total(train_jobs=[{"updates": 100, "sec_per_update": 1.0}],
+                               eval_queries=8400)
+    assert out2["complete_measurements"] is False
+    assert out2["fits_strict_300m"] is False

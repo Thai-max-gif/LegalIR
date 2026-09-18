@@ -171,14 +171,195 @@ def forecast_cold_total(
         + float(final_reload_public_seconds)
         + float(delivery_seconds)
     )
+    # A forecast with no measured workload is unknown, never fitting: calling
+    # with no training jobs and no evaluation must not report 0 seconds as
+    # evidence of reduced runtime.
+    complete = bool(jobs) and total_updates > 0 and (
+        not eval_queries or (eval_qps is not None and float(eval_qps) > 0)
+    )
     return {
         "total_seconds": total,
         "training_seconds": training_seconds,
         "evaluation_seconds": evaluation_seconds,
         "total_updates": total_updates,
-        "fits_nominal_270m": total <= NOMINAL_BUDGET_SECONDS,
-        "fits_strict_300m": total < STRICT_GATE_SECONDS,
+        "complete_measurements": complete,
+        "fits_nominal_270m": bool(complete) and total <= NOMINAL_BUDGET_SECONDS,
+        "fits_strict_300m": bool(complete) and total < STRICT_GATE_SECONDS,
     }
+
+
+def build_attempt_acceptance_receipt(
+    *,
+    working_path: str | Path,
+    cv_report: dict[str, Any],
+    fusion_report: dict[str, Any],
+    doc_disjoint_report: dict[str, Any],
+    predictions: dict[str, Any],
+    qrels_dict: dict[str, list[str]],
+    splits: Any,
+    corpus_doc_ids: set[str],
+    final_reranker_dir: str | Path,
+    final_reranker_report: dict[str, Any],
+    reranker_model: str,
+    reranker_revision: str | None,
+    git_sha: str,
+    backend: str,
+    supervisor_start_utc: str,
+    supervisor_end_utc: str,
+    elapsed_seconds: float,
+    submission_valid: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the machine-readable acceptance receipt for one FULL attempt and
+    verify it against the attempt's own persisted artifacts (fix.md section 12).
+
+    Uses only this attempt's outputs: per-query OOF predictions, fixed splits,
+    qrels, corpus IDs, disjoint report, submission, and adapter files. The
+    receipt is persisted by the caller; shutdown stays unconfirmed here because
+    only the operator can confirm provider termination (re-verify afterwards
+    with scripts/verify_end_to_end_acceptance.py).
+    """
+    import hashlib as _hl
+
+    from src.release.acceptance import not_run_receipt, verify_acceptance, verify_adapter_reload_fresh
+
+    working_path = Path(working_path)
+    receipt = not_run_receipt(attempt_id=working_path.name)
+    try:
+        from src.models.bootstrap import MODEL_REGISTRY as _REG
+
+        dense_rev = (_REG.get("CODE4LIFEOFFICIAL/huydang-dek21-embedding-v2") or {}).get("revision")
+    except Exception:
+        dense_rev = None
+    receipt.update({
+        "runtime_sha": git_sha,
+        "release_sha": git_sha,
+        "backend": backend,
+        "protocol": "confirmation",
+        "selection_protocol": (fusion_report.get("comparison") or {}).get(
+            "selection_protocol", fusion_report.get("selection_protocol", "predeclared_rrf")),
+        "supervisor_start_utc": supervisor_start_utc,
+        "supervisor_end_utc": supervisor_end_utc,
+        "elapsed_seconds": float(elapsed_seconds),
+        "model_revisions": {"reranker": reranker_revision, "dense": dense_rev},
+    })
+    receipt["dataset_digest"] = _hl.sha256(
+        json.dumps({
+            "queries": sorted(qrels_dict.keys()),
+            "qrels": sum(len(v) for v in qrels_dict.values()),
+            "corpus": len(corpus_doc_ids),
+        }, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    receipt["split_random_5fold_sha256"] = (cv_report.get("split_provenance") or {}).get("random_5fold", {}).get("sha256") \
+        if isinstance(cv_report.get("split_provenance"), dict) else None
+    if not receipt["split_random_5fold_sha256"]:
+        receipt["split_random_5fold_sha256"] = cv_report.get("resolved_config_sha256")
+    receipt["config_sha256"] = cv_report.get("resolved_config_sha256")
+    comparison = fusion_report.get("comparison") or {}
+    receipt["predeclared_policy_hash"] = _hl.sha256(json.dumps({
+        "winning_method": fusion_report.get("winning_method"),
+        "feature_columns": (fusion_report.get("manifest") or {}).get("feature_columns"),
+        "selection_protocol": comparison.get("selection_protocol"),
+    }, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    receipt["split_exposure_disclosure"] = (
+        "Frozen seed-42 splits; fusion predeclared (no outer-label selection). "
+        "Development history may include prior runs on these splits; see repo docs."
+    )
+    receipt["expected_oof_queries"] = int(cv_report.get("total_evaluated_queries", 0))
+    receipt["per_fold"] = [
+        {"fold": int(f.get("fold", i)),
+         "count": int(f.get("val_queries", 0)),
+         "recall@5": float(f.get("recall@5", 0.0))}
+        for i, f in enumerate(cv_report.get("folds", []))
+    ]
+    overall = cv_report.get("overall_aggregate_metrics") or {}
+    receipt["pooled_oof_recall@5"] = overall.get("recall@5")
+    receipt["pooled_oof_precision@5"] = overall.get("precision@5")
+    dj_sys = (doc_disjoint_report or {}).get("trained_reranker_system") or {}
+    receipt["doc_disjoint"] = {
+        "recall@5": dj_sys.get("recall@5", (doc_disjoint_report or {}).get("recall@5")),
+        "count": int(dj_sys.get("val_queries", 0)),
+        "complete": bool(doc_disjoint_report),
+    }
+    receipt["training_jobs"] = [
+        {"job": f"fold_{f.get('fold', i)}", "updates": int(f.get("reranker_optimizer_steps", 0))}
+        for i, f in enumerate(cv_report.get("folds", []))
+    ] + [{"job": "final", "updates": int(
+        final_reranker_report.get("optimizer_steps", final_reranker_report.get("global_steps", 0)) or 0)}]
+    reload_ok, reload_detail = verify_adapter_reload_fresh(
+        final_reranker_dir, reranker_model, reranker_revision)
+    receipt["reload_ok"] = bool(reload_ok)
+    receipt["reload_detail"] = reload_detail
+    receipt["submission_path"] = "submissions/submission.json"
+    # OOF predictions for scoring come from the persisted per-query file, never
+    # from the public submission (different query population). Bundle a copy of
+    # every verifier input inside the attempt so the receipt stays
+    # re-verifiable after delivery (scripts/confirm_attempt_shutdown.py).
+    oof_pred_path = working_path / "cv" / "oof_predictions.json"
+    try:
+        oof_predictions = json.loads(oof_pred_path.read_text(encoding="utf-8")) if oof_pred_path.is_file() else {}
+    except Exception:
+        oof_predictions = {}
+    if not isinstance(oof_predictions, dict):
+        oof_predictions = {}
+    inputs_dir = working_path / "acceptance_inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    bundle = {
+        "oof_predictions.json": oof_predictions,
+        "qrels.json": qrels_dict,
+        "splits.json": splits,
+        "corpus_ids.json": sorted(str(x) for x in corpus_doc_ids),
+        "doc_disjoint_report.json": doc_disjoint_report or {},
+        "submission.json": predictions,
+    }
+    verify_inputs: dict[str, str] = {}
+    for name, payload_obj in bundle.items():
+        try:
+            (inputs_dir / name).write_text(json.dumps(payload_obj), encoding="utf-8")
+            verify_inputs[name] = f"acceptance_inputs/{name}"
+        except Exception:
+            pass
+    receipt["verify_inputs"] = verify_inputs
+    artifacts: list[dict[str, Any]] = []
+    for rel in (
+        "checkpoints/reranker_final/adapter_model.safetensors",
+        "checkpoints/reranker_final/adapter_model.bin",
+        "checkpoints/reranker_final/adapter_config.json",
+        "checkpoints/reranker_final/training_manifest.json",
+        "checkpoints/reranker_final/complete.json",
+        "submissions/submission.json",
+        "submissions/submission.zip",
+        "submissions/submission_manifest.json",
+        "cv/oof_predictions.json",
+        "acceptance_inputs/oof_predictions.json",
+        "acceptance_inputs/qrels.json",
+        "acceptance_inputs/splits.json",
+        "acceptance_inputs/corpus_ids.json",
+        "acceptance_inputs/doc_disjoint_report.json",
+        "acceptance_inputs/submission.json",
+    ):
+        target = working_path / rel
+        if target.is_file():
+            artifacts.append({"path": rel, "sha256": _hl.sha256(target.read_bytes()).hexdigest()})
+    receipt["artifacts"] = artifacts
+    receipt["delivery_confirmed"] = bool(submission_valid)
+    receipt["delivery_note"] = (
+        "Delivered to attempt directory (durable Volume path on Modal). "
+        "Provider shutdown and HF publication require separate operator confirmation."
+    )
+    receipt["shutdown_confirmed"] = False
+    verification = verify_acceptance(
+        receipt,
+        oof_predictions=oof_predictions,
+        qrels=qrels_dict,
+        splits=splits,
+        corpus_doc_ids=set(corpus_doc_ids),
+        disjoint_report=doc_disjoint_report or None,
+        submission=predictions,
+        artifacts_dir=working_path,
+    )
+    receipt["verdict"] = verification["verdict"]
+    receipt["reasons"] = verification["reasons"]
+    return receipt, verification
 
 
 @dataclass
@@ -1134,6 +1315,7 @@ def run_kaggle_pipeline(
     18. Support for run_mode="smoke", "gpu_smoke", and "full".
     """
     t_start = time.time()
+    supervisor_start_utc = datetime.now(timezone.utc).isoformat()
     VALID_RUN_MODES = {"smoke", "gpu_smoke", "full"}
     run_mode_str = str(run_mode).lower().strip()
     if run_mode_str not in VALID_RUN_MODES:
@@ -2446,6 +2628,68 @@ def run_kaggle_pipeline(
     )
 
     total_runtime = time.time() - t_start
+    supervisor_end_utc = datetime.now(timezone.utc).isoformat()
+
+    # 14. Attempt-bound acceptance receipt (FULL only; fix.md section 12).
+    # Built from this attempt's own artifacts and verified immediately; a
+    # builder failure must never mask training results, so it degrades to an
+    # INCOMPLETE receipt instead of raising.
+    acceptance_verdict = "SKIPPED_NON_FULL"
+    acceptance_receipt_path = None
+    acceptance_reasons: list[str] = []
+    if is_full:
+        from src.release.acceptance import not_run_receipt as _not_run
+
+        try:
+            _qrels_dict: dict[str, list[str]] = defaultdict(list)
+            for _r in df_qrels.to_dict("records"):
+                _qrels_dict[str(_r["query_id"])].append(str(_r["doc_id"]))
+            _splits = json.loads(Path(split_res.random_5fold_path).read_text(encoding="utf-8"))
+            _corpus_ids = set(df_docs["doc_id"].astype(str)) if "doc_id" in df_docs.columns else set()
+            _final_rev = final_reranker_report.get("base_model_revision")
+            _receipt, _verification = build_attempt_acceptance_receipt(
+                working_path=working_path,
+                cv_report=cv_report,
+                fusion_report=fusion_report,
+                doc_disjoint_report=doc_disjoint_report,
+                predictions=predictions,
+                qrels_dict=dict(_qrels_dict),
+                splits=_splits,
+                corpus_doc_ids=_corpus_ids,
+                final_reranker_dir=final_reranker_dir,
+                final_reranker_report=final_reranker_report,
+                reranker_model="BAAI/bge-reranker-v2-m3",
+                reranker_revision=_final_rev,
+                git_sha=git_sha,
+                backend=str(resolved_backend),
+                supervisor_start_utc=supervisor_start_utc,
+                supervisor_end_utc=supervisor_end_utc,
+                elapsed_seconds=total_runtime,
+                submission_valid=is_submission_valid,
+            )
+            acceptance_receipt_path = working_path / "acceptance_receipt.json"
+            acceptance_receipt_path.write_text(
+                json.dumps({"receipt": _receipt, "verification": _verification}, indent=2),
+                encoding="utf-8",
+            )
+            acceptance_verdict = str(_verification.get("verdict", "INCOMPLETE"))
+            acceptance_reasons = list(_verification.get("reasons", []))
+            print(f"[+] Attempt acceptance receipt: {acceptance_receipt_path} verdict={acceptance_verdict}")
+        except Exception as _acc_exc:
+            _fallback = _not_run(attempt_id=working_path.name)
+            _fallback["reasons"] = [f"receipt builder failed: {type(_acc_exc).__name__}"]
+            acceptance_receipt_path = working_path / "acceptance_receipt.json"
+            try:
+                acceptance_receipt_path.write_text(
+                    json.dumps({"receipt": _fallback, "verification": {"verdict": "INCOMPLETE"}}, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                acceptance_receipt_path = None
+            acceptance_verdict = "INCOMPLETE"
+            acceptance_reasons = list(_fallback["reasons"])
+            print(f"[!] Attempt acceptance receipt INCOMPLETE ({type(_acc_exc).__name__}); training results preserved.")
+
     print("\n" + "=" * 80)
     print(f"LEGALIR TASK 1 PIPELINE RUN COMPLETE in {total_runtime:.2f}s")
     print(f"  - Validation Status                      : {'PASS' if is_submission_valid else 'FAIL'}")
@@ -2480,5 +2724,10 @@ def run_kaggle_pipeline(
             "dense_device": dense_device,
             "reranker_device": reranker_device,
             "fusion_winner": winning_fusion_method,
+            "supervisor_start_utc": supervisor_start_utc,
+            "supervisor_end_utc": supervisor_end_utc,
+            "acceptance_verdict": acceptance_verdict,
+            "acceptance_receipt_path": str(acceptance_receipt_path) if acceptance_receipt_path else None,
+            "acceptance_reasons": acceptance_reasons,
         },
     )

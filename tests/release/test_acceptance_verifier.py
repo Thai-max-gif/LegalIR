@@ -126,12 +126,12 @@ def test_elapsed_boundary(tmp_path):
     ok = _positive_receipt(tmp_path, splits, preds, elapsed=17999.9)
     out = verify_acceptance(ok, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] == "PASS"
     bad = _positive_receipt(tmp_path, splits, preds, elapsed=18000)
     out2 = verify_acceptance(bad, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                              corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                             submission=None, artifacts_dir=tmp_path / "artifacts")
+                             submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out2["verdict"] != "PASS" and any("18000" in r for r in out2["reasons"])
 
 
@@ -147,7 +147,7 @@ def test_exact_threshold_fails(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds, score=0.96)
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["recomputed_recall@5"] == pytest.approx(0.96)
     assert out["verdict"] != "PASS" and any("strictly above" in r for r in out["reasons"])
 
@@ -160,7 +160,7 @@ def test_missing_query_fails(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds)
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("coverage" in r for r in out["reasons"])
 
 
@@ -171,7 +171,7 @@ def test_four_folds_fail(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds)
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("five folds" in r for r in out["reasons"])
 
 
@@ -183,7 +183,7 @@ def test_duplicate_ids_fail(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds)
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("duplicate" in r for r in out["reasons"])
 
 
@@ -194,7 +194,7 @@ def test_absent_disjoint_fails(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds)
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=None,
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("disjoint" in r for r in out["reasons"])
 
 
@@ -205,7 +205,7 @@ def test_mixed_runs_fail(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds_b)  # timing from A, preds from B
     out = verify_acceptance(receipt, oof_predictions=preds_b, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS"
 
 
@@ -217,7 +217,7 @@ def test_stale_adapter_fails(tmp_path):
     receipt["model_revisions"] = {"reranker": "main", "dense": PIN_B}
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("immutable" in r for r in out["reasons"])
 
 
@@ -228,7 +228,7 @@ def test_fake_summary_fails(tmp_path):
     receipt = _positive_receipt(tmp_path, splits, preds, score=0.5)  # recomputed is 1.0
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("inconsistent" in r for r in out["reasons"])
 
 
@@ -241,8 +241,60 @@ def test_missing_weights_receipt_fails(tmp_path):
                              "sha256": hashlib.sha256(b'{"ok": true}').hexdigest()}]
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("weights" in r for r in out["reasons"])
+
+
+def test_missing_submission_fails(tmp_path):
+    splits = _five_fold_splits()
+    corpus = _corpus()
+    preds = _perfect_predictions(splits, corpus)
+    receipt = _positive_receipt(tmp_path, splits, preds)
+    out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
+                            corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
+                            submission=None, artifacts_dir=tmp_path / "artifacts")
+    assert out["verdict"] != "PASS" and any("submission is absent" in r for r in out["reasons"])
+
+
+def test_negative_elapsed_and_absent_endpoints_fail(tmp_path):
+    splits = _five_fold_splits()
+    corpus = _corpus()
+    preds = _perfect_predictions(splits, corpus)
+    receipt = _positive_receipt(tmp_path, splits, preds, elapsed=-5.0)
+    receipt["supervisor_end_utc"] = ""
+    out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
+                            corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
+    assert out["verdict"] != "PASS"
+    assert any("timing endpoint" in r for r in out["reasons"])
+    assert any("[0, 18000)" in r for r in out["reasons"])
+
+
+def test_empty_disjoint_report_fails(tmp_path):
+    splits = _five_fold_splits()
+    corpus = _corpus()
+    preds = _perfect_predictions(splits, corpus)
+    receipt = _positive_receipt(tmp_path, splits, preds)
+    out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
+                            corpus_doc_ids=set(corpus), disjoint_report={},
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
+    assert out["verdict"] != "PASS" and any("disjoint" in r for r in out["reasons"])
+
+
+def test_missing_weights_checksum_fails(tmp_path):
+    import hashlib as _hl
+    splits = _five_fold_splits()
+    corpus = _corpus()
+    preds = _perfect_predictions(splits, corpus)
+    receipt = _positive_receipt(tmp_path, splits, preds)
+    receipt["artifacts"] = [
+        {"path": "adapter_model.safetensors"},  # checksum absent
+        {"path": "training_manifest.json", "sha256": _hl.sha256(b'{"ok": true}').hexdigest()},
+    ]
+    out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
+                            corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
+    assert out["verdict"] != "PASS" and any("checksum absent" in r for r in out["reasons"])
 
 
 def test_failed_shutdown_fails(tmp_path):
@@ -253,5 +305,5 @@ def test_failed_shutdown_fails(tmp_path):
     receipt["shutdown_confirmed"] = False
     out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
-                            submission=None, artifacts_dir=tmp_path / "artifacts")
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("shutdown" in r for r in out["reasons"])
