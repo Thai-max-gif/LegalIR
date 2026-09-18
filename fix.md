@@ -1,7 +1,8 @@
 # Modal and Colab Readiness — Required Fixes
 
-**Review date:** 2026-09-17  
-**Verdict:** **NOT READY for the intended reliable FULL cold run.** The repairs improve correctness and pass the local regression suites, but they are not released, several reuse/provenance paths remain incomplete, and A100 completion/resource measurements are absent.
+**Review date:** 2026-09-18 — committed candidate `7f60b6932d439b5ad61ffec338c7848aef2fa4d3`.
+
+**Verdict:** **NOT READY for the intended reliable FULL cold run.** Several correctness repairs are now committed and the regression suite passes, but strict release verification rejects stale evidence. The new acceptance verifier admits incomplete/invalid attempts, document-disjoint scoring does not use the production fusion policy, and no comparable candidate A100 timing/recall evidence was found in the reviewed repository artifacts. **Decreased training time, improved recall, <5-hour delivery and >96% Recall@5 are not yet established.**
 
 This is a local implementation handoff at the repository root, alongside `README.md`. It is not permission to launch, spend, upload, submit, commit, or push. This review changed documentation only; the source/test repairs described below were already present from another implementation session.
 
@@ -9,13 +10,13 @@ This is a local implementation handoff at the repository root, alongside `README
 
 ## Recommended execution strategy
 
-**Plan refinement: 2026-09-18.** The code-review snapshot below remains dated 2026-09-17; this refinement is not a new source audit or benchmark.
+**Current review: 2026-09-18.** This updates the source audit and local tests for `7f60b69`; it is not an A100 benchmark. F2 is closed locally, F3 is improved but still needs current-corpus binding, and F4 is closed for the normal FULL path by disabling reuse. Remaining priorities are F7 policy parity, F8 verifier integrity, F9 end-to-end receipt integration, then measured qualification (F5/F6/F10) and renewed release evidence (F1).
 
 Optimize the **whole delivered run**, not just optimizer steps. The historical evaluation bottleneck alone extrapolates to 258.6 minutes for five folds, while PyVi took 44.14 minutes. These two costs already exceed five hours before training, dense indexing, document-disjoint evaluation or delivery. The first implementation priority is therefore shared CPU/retrieval work and batched evaluation—not fewer folds or fewer learning exposures.
 
 | Priority | Concrete implementation outcome | Evidence needed before promotion |
 |---|---|---|
-| P0: correct baseline | F2–F4/F7 resolved; fixed split/policy; effective configuration logged | Fresh local correctness gates; no stale/selection-biased acceptance |
+| P0: correct baseline and verifier | Preserve closed F2/F4; finish F3/F7–F9; fixed split/policy; effective configuration logged | Fresh local gates plus adversarial verifier tests; no stale, incomplete or selection-biased acceptance |
 | P1: remove repeated work | One build per immutable index; static retrieval/query encodings reused within the attempt; fold-local labels/memory applied separately | Call counts, cache hit/miss parity, exclusive stage timings and bounded RAM |
 | P2: accelerate evaluation | Explicit inference batch independent of training; multi-query packing; tokenization/padding measured | Representative end-to-end queries/s, unchanged candidate/evidence membership and validated rankings |
 | P3: accelerate training safely | Measure B8/G2 against B16/G1 at the same effective batch16, examples, updates and learning-rate schedule | Stable memory, measured seconds/update, learning-curve and quality comparison; not assumed bitwise equivalent |
@@ -24,24 +25,25 @@ Optimize the **whole delivered run**, not just optimizer steps. The historical e
 
 Keep the existing dense/reranker model families, LoRA rank and canonical chunking for the first candidate. Do not add another encoder, an ensemble, dense fine-tuning, online teacher inference or a broad resume subsystem before this simpler path is measured. Keep the 30-minute contingency for uncertainty; it is not a budget for extra experiments during confirmation.
 
-**What this plan can ensure:** explicit tests prevent accepting a fast but incomplete run or a high score from an invalid evaluation. **What remains empirical:** whether the chosen architecture actually achieves both speed and recall targets. Until the real joint gate passes, readiness remains NOT READY.
+**What implementation must enforce:** reject a fast but incomplete run and a high score from an invalid evaluation. The current tests/verifier do not yet enforce that contract (F8). **What remains empirical:** whether the chosen architecture achieves both speed and recall targets. Until a repaired, independent real-run joint gate passes, readiness remains NOT READY.
 
 ## 1. Snapshot and evidence
 
 | Item | Reviewed state |
 |---|---|
-| Branch / HEAD | `main` / `d39792836482f29bd6d5e691235690c738cdde3d` |
-| Frozen runtime | `373e8791917915da36864b7eb9b2f457493b4a0e` |
-| Working tree | Dirty: candidate source/test fixes plus documentation changes |
-| Fresh offline regression | **486 passed, 2 skipped, 5 warnings, 212.68 seconds; exit 0** |
-| Shell syntax | Modal and Colab wrappers passed `bash -n` |
-| Generated notebook drift | PASS |
+| Branch / HEAD | `main` / `7f60b6932d439b5ad61ffec338c7848aef2fa4d3` |
+| Frozen runtime | `373e8791917915da36864b7eb9b2f457493b4a0e` — stale for this candidate |
+| Working tree | Clean at review start; this review edits only root `fix.md` |
+| Fresh offline regression | **528 passed, 2 skipped, 5 warnings, 217.59 seconds; exit 0** |
+| Generated notebook drift / notebook parity | PASS / PASS |
 | GPU-gate forbidden-fallback scan | PASS |
-| Strict release verifier | PASS for old committed release/runtime, **not for uncommitted fixes** |
-| Direct local Colab bootstrap | PASS with expected HEAD while tree was dirty; confirms missing cleanliness safeguard |
-| Prior exact-HEAD CI | [35231283958](https://github.com/silent9669/LegalIR/actions/runs/35231283958), for `d397928`, not candidate repairs |
-| Existing Kaggle gate | Genuine dual-T4 PASS for `373e879`; three optimizer steps / 27.05 seconds |
-| New candidate CI / GPU smoke / A100 qualification | Not performed in this review |
+| Parameter budget | PASS: 702,754,049 < 4,000,000,000 learned parameters |
+| Strict release verifier | **FAIL:** production freeze is for another runtime; non-evidence changes invalidate old lineage |
+| Colab cleanliness repair | Guard now precedes bootstrap/allocation; contract tests included in the fresh suite |
+| Prior CI reference | [35231283958](https://github.com/silent9669/LegalIR/actions/runs/35231283958) belongs to `d397928`; current candidate CI not checked here |
+| Existing Kaggle gate | Genuine dual-T4 PASS for `373e879`; not approval of `7f60b69` |
+| Acceptance verifier adversarial review | **FAIL:** eight invalid synthetic cases returned PASS; see F8 |
+| Candidate GPU smoke / A100 qualification / FULL run | Not performed in this review; no candidate-bound A100 acceptance receipt found in reviewed artifacts |
 
 Regression command used:
 
@@ -63,23 +65,16 @@ A regression PASS is not a whole prepush PASS, a real-GPU qualification, or a pe
 | Reranker reload revision | Improved: loader propagates explicit/manifest/registry revision; training records logical base model and revision. Real-GPU candidate save/reload still needs renewed smoke evidence. |
 | Query embedding row identity | Improved: sidecar checks IDs, text, model/revision, row count and remaps reordered IDs. This fixes the original blind positional zip. |
 | Expected training-query coverage | Improved for freshly mined FULL folds and document-disjoint jobs: missing expected queries, positive coverage <100%, and negative coverage <99% fail. |
-| Fold reuse | Partial: validates several IDs/settings and some adapter integrity, but incomplete fingerprints/artifact requirements remain. |
-| Final adapter reuse | Partial: revision/weights/training signals/counts checked; equal counts do not identify equal training data. |
-| Document-disjoint reuse | Still weak: optional identity fields can permit stale reports to bypass current evaluation. |
+| Colab preallocation guard | Closed locally: exact-SHA, HEAD-match and dirty-tree checks precede bootstrap/allocation. |
+| Dense index provenance | Immutable revision persisted/validated; expected pin passed by callers; row/dimension/finite checks added. Current-corpus content binding remains open (F3). |
+| Fold / disjoint / final stage reuse | Normal FULL and GPU-smoke orchestration force reuse off; runner also defaults to off. Keep it disabled rather than expanding resume scope (F4). |
+| Confirmatory fusion | FULL OOF and public path now use predeclared RRF, avoiding outer-label winner selection. Document-disjoint path still bypasses that fusion (F7). |
+| Timing and acceptance | Stage telemetry and standalone verifier added, but complete cold supervision/receipt integration is absent and verifier false-PASS cases remain (F8/F9). |
 | Modal detach | Added explicit `--detach`, with attached default and duplicate-flag rejection. Tests verify dispatch semantics, not live disconnect survival or a watchdog. |
 | Modal resource sizing | Not repaired: no explicit CPU/RAM reservation; qualification remains absent. |
 | Cross-attempt recovery | Not implemented: every Modal invocation creates a fresh UUID output directory. |
 
-Code anchors for improvements:
-
-- `src/ranking/reranker.py:214–286`: adapter revision resolution/loading.
-- `src/training/train_reranker.py:156–218`: model/revision selection and recorded identity.
-- `src/pipeline/predict.py:530–584,633`: reranker revision propagation.
-- `src/pipeline/kaggle_train.py:191–283`: train-query cache sidecar validation/remapping.
-- `src/pipeline/oof_runner.py:762–788,1191–1207`: FULL expected-query pair coverage.
-- `tests/unit/test_reranker_revision.py`, `tests/unit/test_query_embedding_cache.py`, `tests/unit/test_fold_resume_identity.py`, `tests/contracts/test_modal_detach.py`: new test coverage included in the fresh run.
-
-Line anchors refer to the reviewed candidate and will move after implementation.
+Relevant regression coverage includes `tests/unit/test_reranker_revision.py`, `tests/unit/test_query_embedding_cache.py`, `tests/unit/test_dense_index_provenance.py`, `tests/unit/test_stage_reuse_disabled.py`, `tests/unit/test_fusion_confinement.py`, `tests/contracts/test_shell_cli.py` and `tests/contracts/test_modal_detach.py`. Concrete current source anchors are in F1–F10 below; they refer to `7f60b69` and will move after implementation.
 
 ## 3. Required work, in priority order
 
@@ -87,81 +82,37 @@ Line anchors refer to the reviewed candidate and will move after implementation.
 
 **Applies:** both backends, even with completely fresh output directories.
 
-The existing freeze/report bind old runtime `373e879`. Local code changes do not alter Git HEAD. Modal's wrapper rejects a dirty tree; that is correct protection, not a guard to bypass. Colab can still select the old HEAD as described in F2.
+The existing freeze/report bind old runtime `373e879`, while the repairs are committed in `7f60b69`. The strict verifier correctly rejects this lineage: `Production freeze is for another runtime`. Both wrappers now reject dirty/mismatched launches. Do not bypass those protections or reuse the old approval.
 
 **Action:** finish the necessary repairs, review the full diff, generate notebooks through the generator, run local verification, then obtain authorization to commit/push. Qualify the resulting runtime `R` through exact-SHA CI and genuine Kaggle dual-T4 smoke. Create an evidence-bearing release `S` with only allowed evidence lineage changes and verify strict approval plus CI on `S`.
 
 **Acceptance:** clean tree; exact selected SHA; genuine report/dataset/config/profile hashes; valid runtime-to-release lineage; CI green on the relevant commits. Do not copy old reports into a new identity, fabricate receipts, relax checks, or stash away the fixes just to launch `d397928`.
 
-### F2 — Reject dirty Colab launches before any allocation
+### F2 — Colab dirty-tree guard: CLOSED LOCALLY; preserve it
 
-**Files:** `scripts/colab/run_colab_cli.sh:243–273`; `scripts/colab/bootstrap.py`; relevant fixtures in `tests/contracts/test_shell_cli.py` and `tests/notebook/test_colab_bootstrap.py`.
+`scripts/colab/run_colab_cli.sh:243–272` now validates exact SHA, checks it against HEAD, and rejects a dirty tree before bootstrap and allocation. The earlier dirty-bootstrap finding described the previous revision, not current behavior. Launcher contract tests are included in the 528-pass regression. No live Colab allocation was exercised.
 
-**Confirmed path:** the wrapper takes `LEGALIR_COMMIT_SHA` or `git rev-parse HEAD`, runs bootstrap, then calls `colab new`. Bootstrap validates HEAD/evidence, not all working-tree edits. The generated notebook clones/checks out the selected commit. Thus local repairs may be present when preflight succeeds but absent from the remote runtime.
+**Retain:** staged/unstaged/deleted/untracked-file rejection, zero allocation on mismatched SHA or stale approval, bounded cleanup and original failure status. Use fake provider executables for regression tests. Do not stash away repairs or launch old HEAD as a workaround.
 
-**Verification performed:** local, CPU-only bootstrap returned `Runtime SHA, freeze, algorithm config, and upstream gate reports match` while the source fixes were uncommitted. No Colab allocation was called.
+### F3 — Dense revision repaired; finish current-corpus binding
 
-**Minimal fix:** add a fail-closed working-tree check matching Modal before allocation/upload, including staged, unstaged, deleted and untracked runtime files. Keep ignored credentials out of Git and avoid printing their contents. Preserve exact-SHA and strict evidence validation. Update fake-repository test fixtures rather than weakening the new check to accommodate them.
+**Closed portions:** `src/retrieval/dense_macro.py:696–899` persists and validates immutable model revision, rejects missing/mutable/mismatched revisions, and checks rows, dimensions and finite values. `src/pipeline/kaggle_train.py:1411–1446` passes the expected pin for load/build. Existing provenance and query-cache tests pass; do not reimplement these fixes.
 
-**Tests:** each dirty case exits nonzero with zero fake `colab new/upload/exec` calls; clean pinned release reaches dispatch; SHA mismatch and stale evidence still fail before allocation; INT/TERM and bounded cleanup behavior remain intact. Use fake provider executables—no live GPU needed.
+**Remaining source-confirmed gap:** the manifest records ordered chunk IDs, but not canonical text/document-mapping content or embedding-file integrity. `load()` compares that optional digest to the cache's own metadata (`876–878`), not to the current canonical corpus; the caller supplies no current-corpus fingerprint. Model/dimension/preprocessing fields are partly optional. `save()` also records `max_length=512` rather than the actual encoding argument.
 
-### F3 — Bind dense document embeddings to the immutable encoder actually used
+**Failure scenario:** loading an internally consistent older cache with the same chunk IDs but changed text/doc mappings is not rejected by a current-corpus comparison. A finite modified vector also passes the finite-value check. Exposure is cache/prebuilt-index reuse; this does not prove a defect in a genuinely fresh pinned build.
 
-**Files:** `src/retrieval/dense_macro.py:637–651,700–731`; `src/pipeline/kaggle_train.py:1362–1365,1421–1428`; model registry and new freeze evidence.
+**Minimal remaining fix:** bind embeddings to the ordered canonical chunk ID, document ID and normalized encoding text; actual preprocessing/max-length settings; immutable encoder/tokenizer identity; and file digests. Pass the expected current fingerprint from the caller and require the relevant versioned fields. Reject/rebuild old or mismatched caches; never relabel unknown vectors. Avoid rehashing the full corpus per query—validate once per loaded index.
 
-**Confirmed defects:**
+**Acceptance tests:** same IDs with changed text/document mapping; missing required fields; altered finite embeddings; changed truncation/preprocessing; plus matching positive-control load. Preserve revision/shape/row/finite-value and query-ID remapping tests. A cold run must explicitly reject restored attempt-specific index caches, not merely label their load as cold.
 
-- Dense `save()` omits `revision` from the index manifest.
-- Dense `load()` accepts an explicit manifest revision such as legacy `main` when no revision argument is supplied.
-- The pipeline loads an existing dense index without an explicit expected revision.
-- The new query-cache sidecar compares against that runtime revision; matching `main` to `main` is internally consistent but does not prove immutable weights.
-- The existing freeze also lists dense revision `main`. Do not infer from the registry pin that every cached index was built with it.
+### F4 — Unsafe FULL stage reuse: CLOSED ON NORMAL ORCHESTRATION PATH
 
-**Failure scenario:** a reused/prebuilt index can contain document vectors from one encoder snapshot while later query embeddings use another, or an unknown index revision gets implicitly attributed to today's registry revision. This affects retrieval correctness, not just metadata aesthetics. Exposure depends on whether the run loads such cached indexes; a fully fresh build does not establish the safety of the load path.
+`OOFRunner` defaults `allow_stage_reuse=False` (`src/pipeline/oof_runner.py:126,176`); fold and disjoint reuse are gated (`763,1134`). `src/pipeline/kaggle_train.py:1569,1698` forces fold/disjoint/final reuse off for FULL and GPU smoke even when requested. This implements the recommended minimal first-run path.
 
-**Minimal fix:** persist the resolved immutable model revision with document vectors, model ID, relevant preprocessing settings, ordered chunk/corpus identity, dimension and integrity checks. Validate these against the selected release before use. Reject/rebuild legacy caches with missing, mutable, or mismatched identities. Ensure query-cache identity uses the same validated encoder contract.
+**Retain and test:** a FULL invocation with reuse requested and plausible old completion artifacts must still execute all five fold jobs, disjoint work and final training. Keep `tests/unit/test_stage_reuse_disabled.py` and orchestration coverage. This prevents stale stage acceptance; it is not an optimizer-resume implementation or a measured speed improvement.
 
-**Important:** passing an expected revision to the query encoder is not sufficient if existing document embeddings were produced by unknown weights. Never relabel old vectors as newly pinned. Rebuild unless immutable provenance is independently established.
-
-**Tests:** save/load round trip retains actual pin; `main`, missing revision, wrong model/revision, changed corpus/preprocessing, row/dimension mismatch invalidate reuse; correctly pinned matching artifacts load; reordered query rows still map correctly. Query-cache dimension is recorded but not validated by the reviewed loader—add shape/finite-value checks and rejection tests while closing this contract.
-
-### F4 — Disable unsafe completed-stage reuse, or finish its contract
-
-**Scope:** reused output directories and restored stage artifacts. **Not a deterministic failure of fresh Modal UUID attempts.** Do not claim an automatic cross-attempt resume exists.
-
-For the fastest safe first-launch path, **disable completed-stage reuse in FULL until its contract is complete**. This avoids building a broad resume subsystem just to launch once. If reliable stage reuse is required now, implement the focused checks below. A future explicit resume feature should be a separate change, not bundled into this review's repair.
-
-#### F4a. Random-fold reuse
-
-**Source:** `src/pipeline/oof_runner.py:389–498`.
-
-- Only completion marker, predictions and metrics are required.
-- Candidate/features files are optional (`448–462`), yet downstream candidate metrics and fusion need them.
-- Stored split SHA may be missing (`420–424`).
-- Adapter checksum is checked only if recorded; base-model comparison does not require/compare base revision (`475–489`).
-- Selected query IDs/settings do not identify query text, qrels, corpus/index, training pairs, or all effective training settings.
-
-**Failure scenarios:** delete a feature/candidate file and reuse still succeeds; change data contents while preserving query IDs and old predictions can be reused; change the model pin and old stage metrics can remain accepted.
-
-**Fix/tests:** require a versioned complete identity and every downstream-required artifact. Bind input data, split membership, model/tokenizer pin, effective training/inference settings, and adapter/artifact checksums. Validate unique and exact expected prediction IDs before any dictionary conversion; validate candidate/feature coverage. Missing/old fields mean cache miss, not compatibility approval. Test one changed identity at a time and each missing/corrupt file; positive-control matching artifacts should reuse without invoking training.
-
-#### F4b. Document-disjoint reuse
-
-**Source:** `src/pipeline/oof_runner.py:1048–1074`.
-
-The fast path accepts marker + report with optional split SHA, model and smoke fields. It returns before loading/verifying the current document-disjoint split and omits required train/validation IDs, candidate/rerank depths, precision, model revision and adapter integrity.
-
-**Fix/tests:** compute and verify current split identity/isolation before reuse; require complete current metadata and report/artifact validation comparable to ordinary folds. Missing stored SHA must reject reuse when a SHA is expected. Test legacy marker, changed split/data, FULL-vs-smoke mismatch, changed inference settings, missing adapter and truncated evaluation coverage. A positive-control reuse must preserve exactly the current held-out population and metrics.
-
-#### F4c. Final adapter reuse
-
-**Source:** `src/pipeline/kaggle_train.py:1630–1719`, especially `1689–1708`.
-
-Current checks compare query and pair **counts**, not contents. A pair-count read failure is swallowed. Same-count changed labels, query text, pairs or training configuration can silently reuse an old final adapter.
-
-**Fix/tests:** bind current query/text/qrels/corpus identity, canonical pair-content digest, effective training configuration and immutable model identity to the final training report; require a valid checksum. Missing metadata/read failures must be a cache miss or explicit integrity error, never permission to reuse. Test same-count changes to query IDs, text, labels, pair evidence and LoRA/training settings, plus corrupted pair files and checksum absence. Verify valid exact-match reuse as a positive control.
-
-**Common rule:** write the completion marker last, after validating required artifacts. Checksums establish artifact integrity; matching input fingerprints establish applicability. Neither substitutes for the other.
+**Deferred, not a first-run blocker while disabled:** any later opt-in reuse must bind data/splits/pairs/config/model identities and require all predictions, candidate/features, adapters and checksums. Count equality is not content equality. Direct runner opt-in is not certified by the normal FULL guard. Keep automatic cross-attempt recovery out of this change; Modal still creates a fresh UUID attempt directory.
 
 ### F5 — Qualify resource and time feasibility before FULL spending
 
@@ -187,15 +138,70 @@ The added Modal detach option is useful but not a complete supervisor. Attached 
 
 A recovered adapter permits later inference only after provenance/reload validation. Stage reuse is not exact optimizer resume, and neither is automatically exposed by the current Modal launcher. Keep that limitation explicit rather than adding speculative resume infrastructure now.
 
-### F7 — Remove validation-driven selection from the confirmatory quality claim
+### F7 — Confirmatory fusion repaired for OOF/public; align document-disjoint evaluation
 
-**Additional inspection for the expanded quality goal:** `src/ranking/train_fusion.py:113–174` passes outer validation labels into `eval_set` with early stopping and evaluates on that same fold. `src/ranking/fusion.py:296–317` actually installs the LightGBM early-stopping callback. The fusion trainer also selects learned versus RRF using aggregate OOF quality. Therefore, current winner OOF results are selection-influenced development measurements, not an untouched confirmatory score for the selected pipeline.
+**Closed portion:** FULL passes `fusion_policy="predeclared_rrf"` to fusion training (`src/pipeline/kaggle_train.py:1603–1614`). The fixed winner propagates `use_learned_fusion=False` into the final public pipeline (`1844–1874`), which applies default RRF (`k=60`, default weights). Outer-label learned-fusion selection is no longer the normal FULL confirmation path. Keep learned alternatives development-only; earlier exposure to fixed splits must still be disclosed.
 
-**Minimal recommended path:** predeclare one fixed fusion policy/configuration before the confirmation run; do not fit, early-stop, or choose it using the outer held-out labels. Keep those labels available only to the scorer after predictions are finalized. Publish alternative fusion scores as diagnostics, never substitute the best one into the acceptance report after looking at them.
+**Remaining confirmed mismatch:** `src/pipeline/oof_runner.py:1352–1398` reranks disjoint candidates and passes them directly to `TopKSelector.select`, without applying `ReciprocalRankFusion.rank_candidates`. Therefore the disjoint score can measure reranker ordering instead of the OOF/public production policy. This is a policy-parity defect, not evidence that the repaired policy raises recall.
 
-**If learned fusion is retained:** use inner validation wholly within each outer training partition, including supervised feature generation. Reusing globally generated OOF features is not automatically nested-safe: feature-generating adapters for other folds may have seen the current outer validation labels. Audit the full dependency graph, not just the final LightGBM row mask. Fit the final production fusion only after confirmation using the predeclared training procedure, and include all extra inner-training cost in the cold-run budget. This is more expensive than the fixed-policy option and is not the recommended first-launch path.
+**Minimal fix:** apply the same frozen fusion configuration before disjoint selection, preserving raw-reranker metrics only as explicitly named diagnostics. Record policy hash and candidate/rerank depth for OOF, disjoint and public paths. Do not select a different policy because it scores better after seeing held-out labels.
 
-**Tests:** replace outer held-out qrels while keeping training inputs fixed; model fitting, early-stopping decisions, candidate scores and predictions must not change—only scoring may change. Verify complete expected query coverage independently of the feature dataframe (current evaluation builds its scoring population from returned predictions). Test that a failed preselected method cannot be replaced by a better observed alternative while retaining a confirmatory PASS.
+**Acceptance tests:** construct candidates where raw-reranker and RRF top-five outputs differ; disjoint and public policy application must yield the same result from identical candidate features. Test ties and missing branch signals. Mutating held-out qrels must change scoring only, not fitting, fusion decisions or predictions. The existing fusion-confinement tests do not establish disjoint parity.
+
+If learned fusion is introduced later, use nested training-only validation including supervised feature generation; merely masking final LightGBM rows is not sufficient. Include inner-training cost in the runtime budget.
+
+### F8 — Acceptance verifier false-PASS paths: BLOCKING
+
+**Files:** `src/release/acceptance.py`, `scripts/verify_end_to_end_acceptance.py`, `tests/release/test_acceptance_verifier.py`.
+
+The verifier now exists and recomputes pooled recall, but its PASS is not sufficient evidence of a complete matching attempt. A local in-memory reproduction used the existing positive fixture with temporary files outside the repository. The positive control passed; **each of these eight invalid variants also returned `PASS` with empty reasons**:
+
+| Reproduced invalid input | Current gap | Required fail-closed repair |
+|---|---|---|
+| `submission=None` | Validation skipped at acceptance.py:261 | Require a readable submission and independently supplied expected public IDs |
+| `submission={}` | Empty loop succeeds at 262 | Require exact canonical public coverage (1,000 IDs in FULL), not just row shape |
+| Only `{"path":"missing_adapter_model.safetensors"}` in inventory; no file/checksum | Existence/hash check conditional at 283; name substring suffices at 281 | Require artifact root, required roles/files, digests and actual final-adapter identity |
+| `elapsed_seconds=-1`, both UTC endpoints null | Only numeric `<18000` checked at 231–234 | Require finite, nonnegative, non-boolean elapsed and complete supervisor timing evidence bound to the attempt |
+| Empty disjoint report `{}` with receipt `complete=True` | Missing recall defaults to zero at 247–250 | Verify disjoint split/isolation, exact expected predictions, recomputed metrics and adapter/policy identity |
+| `training_jobs=[]`, `per_fold=[{}]*5` | Only fold-list length checked at 225–228; training jobs unchecked | Require five distinct fold records, disjoint and final jobs, actual updates/coverage and corresponding adapters; recompute fold metrics |
+| Unrelated attempt ID and arbitrary nonempty dataset/split/config strings | Presence/syntax checks at 153–167, not binding | Compare digests against actual declared inputs and all output manifests; validate runtime/release lineage and protocol |
+| Five copies of one two-query fold, two predictions and expected count2, against ten-query qrels | Validation IDs collapse into a set at 109–121; no independent full-population check | Validate unique fold memberships, train/validation isolation and exact canonical labeled population; each OOF query appears once |
+
+These are synthetic correctness failures, **not measured production scores or timings**. They show why 528 passing tests cannot justify a performance/quality claim.
+
+**Test corrections:** `test_elapsed_boundary` currently explicitly accepts `submission=None` (`tests/release/test_acceptance_verifier.py:122–130`); supply complete otherwise-valid evidence for boundary tests. The existing mixed-run test changes query IDs, so it only catches coverage mismatch. Add same-query-population mixed-attempt fixtures (fast timing from A, high-score predictions or final adapter from B). Add duplicate JSON-key rejection before conversion to dict, missing public IDs, duplicate fold membership, missing training jobs, missing checksums/root, empty disjoint evidence, invalid numeric types/NaN/infinity, and malformed receipt/schema cases. Return nonzero with structured FAIL/INCOMPLETE, not an unhandled exception or PASS. Keep one complete matching positive control; use tiny valid model artifacts for reload integration, not literal `b"weights"` as proof of a usable model.
+
+**CLI repair:** submission and artifacts base are currently optional (`scripts/verify_end_to_end_acceptance.py:42,48`); missing files become `None` (`33–36`). Require the inputs needed for FULL acceptance, including canonical public IDs and document-disjoint split/predictions. Check actual file digests against manifests before scoring. Bare reload/delivery/shutdown booleans must reference matching independently checked evidence, not self-certify success.
+
+### F9 — Wire the real cold clock, fresh reload and acceptance receipt
+
+**Inspected integration gaps:** no runtime caller/producer of `not_run_receipt` or `verify_acceptance` was found in the pipeline/launch paths; the verifier is standalone. `kaggle_train.py` records internal stage timings and an internal `time.time()` total, not an outer cold monotonic interval. `resource_inventory()` exists but the inspected runtime path does not call it. `tests/unit/test_measurement_protocol.py` verifies serialization of supplied numbers, not real stage exclusivity or cold-run completeness.
+
+`src/pipeline/kaggle_train.py:1849–1959` loads the final pipeline **in the same process**, performs inference and validates official public coverage. Keep those real validation checks. They do not fulfill the fresh-process replay requirement, and the independent verifier does not currently bind itself to that validated output. Modal's final volume commit and external delivery also lie outside the internal pipeline timer.
+
+**Minimal integration:**
+
+1. Create one attempt identity and NOT_RUN receipt before setup/allocation; the independent supervisor records monotonic start plus UTC/resource/cache context.
+2. Persist stage/job manifests and per-query OOF/disjoint predictions with matching input/model/policy digests. Record actual effective updates, examples/tokens, cache state and peak memory. Treat overlapping stage timings as overlapping, not additive exclusive durations.
+3. Run final artifact-only inference in a fresh subprocess with training prohibited and no inherited live model object. Validate exact public IDs and persist the reload process/artifact hashes. Avoid an unnecessary duplicate full inference pass.
+4. Confirm durable delivery by reading back required objects/checksums; then close the cold runtime interval. Record independent provider termination evidence separately, following section8.1.
+5. Invoke the repaired verifier against the delivered, declared inputs. Missing stages or failed delivery/stop produce FAIL/INCOMPLETE. Include the receipt and verifier result in the durable bundle; never turn a stopped partial attempt into PASS.
+
+**Tests:** local tiny-model orchestration through five folds, disjoint, final training, subprocess reload, submission, delivery and verification; fake clocks/provider APIs for lifecycle failures. Prove fresh reload cannot invoke training. Assert setup and delivery are inside the outer interval; inject partial upload, corrupted adapter, wrong process/model receipt and same-population mixed attempts. Provider survival/spend checks still require a separately approved bounded exercise.
+
+### F10 — Prove decreased training time and improved recall, not just target attainment
+
+No candidate-bound A100 comparison was found in the reviewed repository artifacts. The older accepted benchmark (`artifacts/task1/benchmarks/accepted/final_model.json`, run `run_20260826_065726_fielded_bm25_exact`) reports five-fold recall about75.36% and disjoint recall about67.72%; it is not a benchmark of `7f60b69`. The historical82.54% is one fold from a different attempt. Neither supports a causal claim that this commit improves recall or time.
+
+**Bounded comparison protocol, after separate GPU authorization:**
+
+- Use the repaired leakage-safe baseline, same canonical data/splits, model pins, evidence/candidate depth and declared hardware/software profile. Record actual CPU/RAM/GPU and cache state. Compare training stages separately from full delivered-run time; faster evaluation is not faster optimizer training.
+- For speed-only experiments, hold examples, effective updates, effective batch, precision and schedule fixed; measure repeated representative windows and preserve retrieval/evidence/ranking parity. B16/G1 versus B8/G2 remains an experiment, not an implemented or proven speedup. Log the resolved inference batch because it can still inherit training batch8 when no inference override is set.
+- For quality changes, use paired inner-validation predictions on the same population; disclose seeds and uncertainty. Require positive recall delta for a “better recall” claim, and no unacceptable document-disjoint regression under a predeclared criterion. Use section10's bounded experiments, not adaptive tuning on confirmation labels.
+- Persist baseline/candidate seconds, tokens/examples/updates, queries per second, peak memory, pooled/per-fold Recall@5 and Precision@5, disjoint metrics and policy/data digests. Compute speedup=`baseline_seconds/candidate_seconds` and recall delta in percentage points. Missing baseline measurements mean NOT_ESTABLISHED, not improvement.
+- Freeze the selected procedure before one approved FULL confirmation. Improvement relative to baseline and the absolute `<18,000s AND >0.96` gate are separate conclusions; either can pass while the other fails. Qualify Modal and Colab independently before claiming both meet the deadline.
+
+Do not reduce folds, omit disjoint work, weaken coverage, or substitute candidate recall for actual top-five recall to improve the numbers. Correctness repairs may change scores in either direction; measure honestly.
 
 ## 4. Proposed budget — not a benchmark
 
@@ -218,12 +224,12 @@ Quality target: >96% honest mean Recall@5. Historical one-fold Recall@5 was 82.5
 
 ## 5. Suggested next implementation sequence
 
-1. **Close Colab preallocation cleanliness and dense-index provenance.** Verify with fake CLI/cache fixtures; no GPU.
-2. **Choose minimal FULL reuse policy:** disable unsafe reuse first, or implement F4 identities/completeness with adversarial tests. Do not enable cross-attempt recovery accidentally.
-3. **Close F7 and add timing/quality diagnostics.** Fix the evaluation procedure before selecting a quality winner; implement P1–P3 with parity and failure tests. Preserve existing coverage/data/leakage constraints.
-4. **Run focused tests, then the full local gate.** Check notebook drift, parameter budget and fallback policy. Release the candidate with authorization: runtime CI → genuine Kaggle dual-T4 smoke → evidence-bearing release → strict verifier and release CI.
-5. **Obtain a bounded A100 qualification/development budget.** Measure resources/throughput and supervision/delivery; choose one provider. Run only the bounded quality experiments justified in section10. Freeze the selected procedure and renew applicable release evidence after changes. No automatic promotion to FULL.
-6. **Only if qualified and approved:** one supervised FULL attempt using the operational guide. The independent verifier must check both targets on that attempt, including final delivery and shutdown; qualification alone is not acceptance.
+1. **Preserve closed F2/F4; finish F3/F7.** Add current-corpus cache binding and disjoint fusion-policy parity. Do not reimplement guards or expand resume scope.
+2. **Close F8 before trusting any acceptance PASS.** Turn each reproduced invalid case into a failing regression, repair validation, and retain complete positive/threshold controls.
+3. **Wire F9 and the F10 measurement protocol.** Complete cold supervisor timing, job/prediction receipts, fresh-process inference and independent delivered-artifact verification; test offline before GPU spending.
+4. **Run focused tests and the complete local gate.** Check notebook drift/parity, parameter budget and fallback policy. With authorization, qualify the repaired runtime through exact-SHA CI → genuine Kaggle dual-T4 smoke → evidence-bearing release → strict verifier and release CI.
+5. **Obtain a bounded A100 qualification/development budget.** Compare repaired baseline and candidate on one provider, optimize the measured bottleneck using P1–P4 and section10, and verify F5/F6 resources/lifecycle. Freeze the selected procedure and renew applicable release evidence after runtime changes. No automatic promotion to FULL.
+6. **Only if qualified and approved:** one supervised FULL attempt. The repaired independent verifier checks actual same-attempt time, quality, completeness, delivery and shutdown. Report baseline improvement separately from the absolute joint target; qualification alone is not acceptance.
 
 Do not implement a broad architecture rewrite before measuring these remaining bottlenecks. Keep equivalent performance work separate from training/ranking changes. Larger batches, new losses, retrieval-depth reductions and alternate models require their own quality/resource evidence.
 
@@ -239,13 +245,16 @@ Do not implement a broad architecture rewrite before measuring these remaining b
 - [ ] Five-fold + document-disjoint results cover all required held-out queries without leakage.
 - [ ] Final adapter/tokenizer/base identity reloads; submission covers expected public IDs and valid documents.
 - [ ] Required artifacts/checksums/receipts are durable; provider shutdown verified.
-- [ ] F7 fixed: outer labels cannot select/early-stop fusion or replace the predeclared winner; prior development exposure disclosed.
+- [ ] F7 complete: preserve outer-label confinement and align document-disjoint fusion with the frozen OOF/public policy; prior development exposure disclosed.
+- [ ] F8 complete: all eight reproduced invalid attempts and additional malformed/mixed-run fixtures reject; complete positive control passes.
+- [ ] F9 complete: real outer timing, fresh-process final inference, durable receipts and independent verification integrated.
+- [ ] F10 measured: comparable baseline/candidate evidence establishes training/runtime deltas and recall deltas; no improvement claim from tests or historical unmatched runs.
 - [ ] Runtime-only changes preserve candidate/evidence membership and pass ranking/scorer parity; training-semantic changes have separate quality evidence.
 - [ ] Same-attempt independent verification reports **cold elapsed <18,000 seconds AND pooled official OOF Recall@5 >0.96**, without rounding across thresholds.
 - [ ] Compare against the repaired baseline on the same development split/protocol; do not treat old single-fold 82.54% as an apples-to-apples current baseline.
 - [ ] Actual runtime and quality reported honestly, even if targets are missed; failed targets retain FAIL/INCOMPLETE rather than a readiness PASS.
 
-## 7. Documentation consolidation performed
+## 7. Earlier documentation consolidation — now committed in `7f60b69`
 
 - `README.md`: short entrypoint and truthful candidate/release distinction.
 - `docs/ARCHITECTURE.md`: actual components and configuration; removed conflicting LoRA values, calibration/utilization guarantees and automatic-resume claims.
@@ -254,7 +263,7 @@ Do not implement a broad architecture rewrite before measuring these remaining b
 - `docs/A100_SCALE_DOWN_AND_OPTIMIZATION_REPORT.md`: retained measured history; removed disputed elapsed time and unsupported speedups.
 - Removed redundant `docs/A100_REARCHITECTURE_SPEC.md`; its useful constraints and proposed budget are preserved here and in the architecture/history references.
 
-The already-deleted root launch guide and review prompt were pre-existing changes, not deletions performed by this review. No training code, tests, configuration, notebook, gate report or freeze was edited by this review. No GPU was allocated, no artifacts uploaded, and no commit or push was made.
+The former root launch guide and review prompt were already deleted before the earlier consolidation. This 2026-09-18 review modifies only root `fix.md`, not those documentation files or runtime source/tests/configuration/notebooks/evidence. Local verification included a parameter-audit command that reported exporting its audit file; Git remained clean before this documentation edit. No GPU was allocated, no artifacts uploaded, and no commit or push was made by this review.
 
 ## 8. Joint acceptance contract: what counts as established
 
@@ -482,7 +491,7 @@ Proposed new test names/receipt files below do **not** yet exist unless independ
 
 ### Independent acceptance verifier
 
-Add a small CPU-only verifier (proposed `scripts/verify_end_to_end_acceptance.py`) and focused tests only after implementation is authorized. It must reconstruct the official OOF metric from persisted per-query predictions/qrels and fixed expected splits, not trust a claimed summary score. Use declared canonical paths without broad filesystem scans or credential reads.
+The CPU-only `scripts/verify_end_to_end_acceptance.py` and `src/release/acceptance.py` now exist, but are **not yet sufficient for acceptance**: F8 records reproduced false-PASS cases and F9 records missing runtime integration. Repair these existing modules after implementation is authorized; do not create a second competing verifier. Reconstruct official OOF and disjoint metrics from persisted per-query predictions/qrels, validated fixed splits and independently established expected populations. Use declared canonical paths without broad filesystem scans or credential reads.
 
 Check: exact ID/fold coverage; no duplicate document IDs; five valid folds; disjoint report/input identity; immutable model/data/config identity; elapsed clock evidence; final fresh-process reload receipt; full public submission shape/IDs; artifact checksums and delivery confirmation; shutdown state; predeclared policy hash and selection protocol. Hard-fail inconsistent identities, rounded threshold comparisons, missing timing endpoints and unknown/incomplete states.
 
@@ -506,7 +515,7 @@ Use receipt hashes to cross-reference outputs. Checksums do not independently au
 
 Implement in this order, with minimal changes to existing modules:
 
-1. **Correctness foundation:** F1–F4 and F7; effective configuration/identity; disable unsafe FULL reuse; add scorer/coverage/leakage/launcher tests.
+1. **Correctness foundation:** preserve closed F2/F4; finish F3 current-corpus identity, F7 disjoint policy parity and F8 fail-closed acceptance; retain scorer/coverage/leakage/launcher tests. F1 renewed evidence must bind the resulting runtime.
 2. **Runtime architecture:** resident immutable indexes, once-per-run static/query work, bounded evidence caching, measured batched reranking and clean model lifecycle. Verify equivalent output before claiming a speed-only change.
 3. **Quality development:** stage-loss diagnostics and bounded training-only experiments from section10. Freeze one procedure; do not run an unbounded search inside the confirmation attempt.
 4. **Acceptance machinery:** supervisor timing, per-query evidence, fresh-process reload/delivery receipts and independent verifier with failure fixtures.

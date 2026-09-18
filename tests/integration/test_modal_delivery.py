@@ -121,7 +121,7 @@ def launcher(monkeypatch, tmp_path):
 @pytest.fixture
 def offline_stubs(launcher, monkeypatch):
     """Stub bootstrap, HF preflight, pipeline, and Volume commit."""
-    calls = {"verify": [], "prepare": [], "preflight": [], "pipeline": [], "commits": []}
+    calls = {"verify": [], "prepare": [], "preflight": [], "pipeline": [], "commits": [], "order": []}
     received = {}
 
     import scripts.colab.bootstrap as boot
@@ -130,17 +130,21 @@ def offline_stubs(launcher, monkeypatch):
 
     def fake_verify(sha, kaggle_report, freeze_file, repo_root=None):
         calls["verify"].append((sha, str(kaggle_report), str(freeze_file)))
+        calls["order"].append("verify")
         return {"ok": True}
 
     def fake_prepare(dataset_dir, freeze_file=None):
         calls["prepare"].append((str(dataset_dir), str(freeze_file) if freeze_file else None))
+        calls["order"].append("prepare")
         return Path(dataset_dir)
 
     def fake_preflight(repo_id, token=None, allow_public_repo=False):
         calls["preflight"].append((repo_id, allow_public_repo))
+        calls["order"].append("preflight")
         return True, "offline preflight ok"
 
     def fake_pipeline(**kwargs):
+        calls["order"].append("pipeline")
         received.update(kwargs)
         out = Path(kwargs["output_dir"])
         # Simulate training writing directly into the durable attempt path
@@ -415,6 +419,43 @@ def test_default_consent_is_false():
     assert sig.parameters["hf_allow_public_repo"].default is False
     sig_main = inspect.signature(mod.main)
     assert sig_main.parameters["hf_allow_public_repo"].default is False
+
+
+def test_remote_phase_order_hf_before_dataset_before_train(launcher, offline_stubs):
+    """fix.md remote order: checkout+provenance, then HF access, then dataset,
+    then train. HF failure must precede expensive data acquisition."""
+    calls, received = offline_stubs
+    launcher.run_production_training(VALID_SHA)
+    order = [p for p in calls["order"] if p in ("verify", "preflight", "prepare", "pipeline")]
+    assert order.index("verify") < order.index("preflight") < order.index("prepare") < order.index("pipeline")
+
+
+def test_hf_denial_blocks_dataset_acquisition(launcher, offline_stubs, monkeypatch):
+    calls, _ = offline_stubs
+    import scripts.gates.run_a100 as gate
+
+    monkeypatch.setattr(gate, "preflight_huggingface_access", lambda *a, **k: (False, "denied"))
+    with pytest.raises(RuntimeError, match="preflight"):
+        launcher.run_production_training(VALID_SHA)
+    assert calls["prepare"] == [], "denied HF access must not trigger dataset acquisition"
+    assert calls["pipeline"] == []
+
+
+def test_remote_dependency_contract():
+    """The Modal remote body imports must expose the expected callables."""
+    import inspect
+
+    import scripts.colab.bootstrap as boot
+    import scripts.gates.run_a100 as gate
+    import scripts.run_colab_train as wrapper
+
+    assert callable(getattr(boot, "verify_launch", None))
+    assert callable(getattr(boot, "prepare_dataset", None))
+    assert callable(getattr(gate, "preflight_huggingface_access", None))
+    assert callable(getattr(wrapper, "run_colab_production_training", None))
+    params = inspect.signature(wrapper.run_colab_production_training).parameters
+    for required in ("dataset_dir", "output_dir", "expected_sha"):
+        assert required in params, f"run_colab_production_training missing {required}"
 
 
 def test_modal_forwards_explicit_consent(launcher, monkeypatch):

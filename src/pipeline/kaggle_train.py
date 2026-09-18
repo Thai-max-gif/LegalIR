@@ -122,6 +122,65 @@ class StageTimingTelemetry:
         }
 
 
+NOMINAL_BUDGET_SECONDS = 270 * 60  # 270-minute nominal work allocation (fix.md section 4)
+STRICT_GATE_SECONDS = 18000  # strict under-five-hours acceptance (exactly 18000 fails)
+
+
+def forecast_cold_total(
+    setup_index_seconds: float = 0.0,
+    static_retrieval_seconds: float = 0.0,
+    assembly_seconds: float = 0.0,
+    train_jobs: list[dict[str, Any]] | None = None,
+    eval_queries: int = 0,
+    eval_qps: float | None = None,
+    fusion_seconds: float = 0.0,
+    final_reload_public_seconds: float = 0.0,
+    delivery_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """Conservative cold-run forecast from measured stage bounds (fix.md section 11).
+
+    ``T_total = setup + static + assembly + sum(updates*sec_per_update + overhead)
+    + Q_eval/qps + fusion + reload/public + delivery``. Stage clocks must be
+    exclusive; workload counts (not nominal configs) drive training/evaluation.
+    Unknown throughput (``eval_qps`` missing/zero) fails closed to infinity —
+    never a passing forecast. Headline speedups must be re-measured per stage
+    after integration, never multiplied across the run.
+    """
+    jobs = list(train_jobs or [])
+    training_seconds = 0.0
+    total_updates = 0
+    for job in jobs:
+        updates = int(job.get("updates", 0))
+        spu = float(job.get("sec_per_update", 0.0))
+        overhead = float(job.get("load_save_overhead", 0.0))
+        if updates < 0 or spu < 0 or overhead < 0:
+            raise ValueError(f"negative training forecast component: {job}")
+        total_updates += updates
+        training_seconds += updates * spu + overhead
+    if eval_queries and (not eval_qps or float(eval_qps) <= 0):
+        evaluation_seconds = float("inf")
+    else:
+        evaluation_seconds = (int(eval_queries) / float(eval_qps)) if eval_queries else 0.0
+    total = (
+        float(setup_index_seconds)
+        + float(static_retrieval_seconds)
+        + float(assembly_seconds)
+        + training_seconds
+        + evaluation_seconds
+        + float(fusion_seconds)
+        + float(final_reload_public_seconds)
+        + float(delivery_seconds)
+    )
+    return {
+        "total_seconds": total,
+        "training_seconds": training_seconds,
+        "evaluation_seconds": evaluation_seconds,
+        "total_updates": total_updates,
+        "fits_nominal_270m": total <= NOMINAL_BUDGET_SECONDS,
+        "fits_strict_300m": total < STRICT_GATE_SECONDS,
+    }
+
+
 @dataclass
 class KaggleRunResult:
     """Structured result of an end-to-end LegalIR Kaggle pipeline run."""

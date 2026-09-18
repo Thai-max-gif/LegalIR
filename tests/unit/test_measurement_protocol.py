@@ -1,6 +1,11 @@
 """F5: local benchmark/measurement protocol primitives."""
+import pytest
+
 from src.pipeline.kaggle_train import (
+    NOMINAL_BUDGET_SECONDS,
+    STRICT_GATE_SECONDS,
     StageTimingTelemetry,
+    forecast_cold_total,
     resource_inventory,
 )
 
@@ -28,3 +33,49 @@ def test_resource_inventory_offline_safe():
     assert inv["cpu_logical"] is None or int(inv["cpu_logical"]) >= 1
     assert "gpu_count" in inv and "gpu_names" in inv
     assert isinstance(inv["gpu_names"], list)
+
+
+def _illustrative_jobs():
+    # fix.md illustration (not a schedule): 5x700 fold + 700 disjoint + 875 final.
+    return [{"updates": n, "sec_per_update": 0.0, "load_save_overhead": 0.0}
+            for n in (700, 700, 700, 700, 700, 700, 875)]
+
+
+def test_forecast_training_allowance_arithmetic():
+    # 5075 updates; a 90-minute training allowance permits ~1.064 s/update
+    # before any model load/save or validation overhead.
+    jobs = _illustrative_jobs()
+    assert sum(j["updates"] for j in jobs) == 5075
+    out = forecast_cold_total(train_jobs=[{**j, "sec_per_update": 5400 / 5075} for j in jobs])
+    assert out["training_seconds"] == pytest.approx(5400.0)
+    assert out["total_updates"] == 5075
+    # Any overhead on top breaks the allowance: forecast must say so.
+    over = forecast_cold_total(
+        train_jobs=[{**j, "sec_per_update": 5400 / 5075, "load_save_overhead": 60.0} for j in jobs]
+    )
+    assert over["training_seconds"] > 5400.0
+
+
+def test_forecast_is_additive_not_multiplied():
+    base = forecast_cold_total(setup_index_seconds=100.0, eval_queries=100, eval_qps=1.0)
+    assert base["total_seconds"] == pytest.approx(200.0)
+    halved_eval = forecast_cold_total(setup_index_seconds=100.0, eval_queries=100, eval_qps=2.0)
+    assert halved_eval["total_seconds"] == pytest.approx(150.0)
+    assert halved_eval["evaluation_seconds"] == pytest.approx(50.0)
+    assert halved_eval["training_seconds"] == 0.0
+
+
+def test_forecast_unknown_throughput_fails_closed():
+    out = forecast_cold_total(eval_queries=8400, eval_qps=0)
+    assert out["evaluation_seconds"] == float("inf")
+    assert out["fits_nominal_270m"] is False
+    assert out["fits_strict_300m"] is False
+
+
+def test_forecast_budget_flags():
+    assert NOMINAL_BUDGET_SECONDS == 270 * 60
+    assert STRICT_GATE_SECONDS == 18000
+    fits = forecast_cold_total(setup_index_seconds=100.0)
+    assert fits["fits_nominal_270m"] is True and fits["fits_strict_300m"] is True
+    with pytest.raises(ValueError, match="negative"):
+        forecast_cold_total(train_jobs=[{"updates": 10, "sec_per_update": -1.0}])
