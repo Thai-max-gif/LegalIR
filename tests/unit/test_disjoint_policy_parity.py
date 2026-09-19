@@ -10,9 +10,17 @@ from pathlib import Path
 import pandas as pd
 
 from src.pipeline.oof_runner import OOFRunner
+from src.ranking.evidence_pack import EvidencePackBuilder
 from src.ranking.fusion import ReciprocalRankFusion
 from src.ranking.reranker import CrossEncoderReranker
 from src.retrieval.hybrid_search import HybridSearchEngine
+
+
+def _evidence():
+    return EvidencePackBuilder(macro_chunks=[
+        {"chunk_id": "docA-c", "doc_id": "docA", "text_norm": "docA evidence"},
+        {"chunk_id": "docB-c", "doc_id": "docB", "text_norm": "docB evidence"},
+    ])
 
 
 def _tiny_repo(tmp_path: Path):
@@ -59,6 +67,7 @@ def test_disjoint_trained_pass_applies_fixed_rrf(monkeypatch, tmp_path):
     )
     runner.split_provenance = {}
     runner.load_data()
+    runner.evidence_builder = _evidence()
 
     monkeypatch.setattr(
         HybridSearchEngine, "search_candidates",
@@ -89,3 +98,46 @@ def test_disjoint_trained_pass_applies_fixed_rrf(monkeypatch, tmp_path):
     assert report["trained_reranker_system"]["val_queries"] == 1
     assert report["fusion_policy"] == "predeclared_rrf"
     assert report["trained_reranker_system"]["mrr"] == 1.0
+
+
+def test_oof_fold_applies_same_fixed_rrf_policy(monkeypatch, tmp_path):
+    """OOF folds must validate the submission scoring policy, not raw
+    reranker order — the confirmatory OOF score certifies the RRF+selector
+    pipeline that public inference runs."""
+    data_dir, sp, _djp = _tiny_repo(tmp_path)
+    runner = OOFRunner(
+        data_dir=data_dir, index_dir=tmp_path / "idx", output_dir=tmp_path / "cv",
+        splits_path=sp, config_path=None,
+        num_folds=2, candidate_k=10, rerank_k=5, use_reranker=True,
+        reranker_model="mock", train_reranker_per_fold=False, smoke=True,
+    )
+    runner.load_data()
+    runner.evidence_builder = _evidence()
+
+    monkeypatch.setattr(
+        HybridSearchEngine, "search_candidates",
+        lambda self, query="", top_k=10, exclude_qid=None, q_emb=None, **k: [dict(c) for c in _branch_cands()],
+    )
+
+    def stub_score(pairs, batch_size=16, max_length=384):
+        return [10.0 if "docB" in passage else -5.0 for _, passage in pairs]
+
+    reranker = CrossEncoderReranker(model_name="mock", score_fn=stub_score)
+
+    rrf_calls: list = []
+    orig_predict = ReciprocalRankFusion.predict
+
+    def spy_predict(self, records, **kwargs):
+        rrf_calls.append([str(c.get("doc_id")) for c in records])
+        return orig_predict(self, records, **kwargs)
+
+    monkeypatch.setattr(ReciprocalRankFusion, "predict", spy_predict)
+
+    fold_info = {"train_query_ids": ["q1"], "val_query_ids": ["q2"]}
+    f_preds, _cands, _feats, f_metrics, _rt = runner.run_fold(
+        fold_idx=0, fold_info=fold_info, reranker=reranker)
+
+    assert rrf_calls, "fixed RRF was not applied in the OOF fold pass"
+    assert rrf_calls[0] == ["docB", "docA"], "RRF must receive reranker-ordered candidates"
+    assert f_preds["q2"][0] == "docA"
+    assert f_metrics["mrr"] == 1.0

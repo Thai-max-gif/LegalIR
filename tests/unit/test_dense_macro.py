@@ -138,6 +138,36 @@ def test_encode_texts_mean_pools_attention_mask_and_normalizes():
     assert np.allclose(embedding, expected)
 
 
+def test_encode_texts_batch_size_invariant():
+    """Batch size changes only chunking/OOM behavior, never output values."""
+
+    class DummyTokenizer:
+        def __call__(self, texts, **kwargs):
+            n = len(texts)
+            return {
+                "input_ids": torch.zeros((n, 3), dtype=torch.long),
+                "attention_mask": torch.ones((n, 3), dtype=torch.long),
+            }
+
+    class DummyModel:
+        def __call__(self, **kwargs):
+            n = kwargs["input_ids"].shape[0]
+            base = torch.arange(n * 3, dtype=torch.float32).reshape(n, 3, 1)
+            return SimpleNamespace(last_hidden_state=base.expand(n, 3, 2).clone())
+
+    def make():
+        r = DenseMacroRetriever(dimension=2, use_pyvi=False, device="cpu")
+        r.tokenizer = DummyTokenizer()
+        r.model = DummyModel()
+        return r
+
+    texts = [f"text-{i}" for i in range(7)]
+    a = make().encode_texts(texts, batch_size=2)
+    b = make().encode_texts(texts, batch_size=5)
+    assert a.shape == b.shape == (7, 2)
+    assert np.allclose(a, b)
+
+
 def test_dense_macro_fails_closed_on_load_failure(monkeypatch):
     """Ensure DenseMacroRetriever raises RuntimeError instead of falling back to mock Bert."""
     import transformers

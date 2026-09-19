@@ -46,6 +46,13 @@ from src.retrieval.exact_matcher import ExactMatcher
 from src.retrieval.hybrid_search import HybridSearchEngine
 from src.retrieval.question_memory import TrainQuestionMemory
 from src.retrieval.types import CandidateRecord
+from src.ranking.fusion import ReciprocalRankFusion
+
+
+# Fixed predeclared fusion policy shared by OOF folds, the document-disjoint
+# trained pass, and public inference (predict.py default). Stateless; the
+# confirmatory score must evaluate one identical scoring policy everywhere.
+_OOF_FIXED_RRF = ReciprocalRankFusion()
 
 
 def _sha256_sorted_ids(ids) -> str:
@@ -673,7 +680,17 @@ class OOFRunner:
                     feat_df["fold"] = fold_idx
                     fold_feature_dfs.append(feat_df)
 
-                top5 = self.selector.select(candidates)
+                # Fixed predeclared RRF before selection, mirroring public
+                # inference and the disjoint trained pass: the confirmatory OOF
+                # score must evaluate the submission scoring policy, not
+                # reranker-order top-5. Fold-local doc frequencies only.
+                ranked = _OOF_FIXED_RRF.predict(
+                    candidates,
+                    query_id=qid,
+                    query_text=q_text,
+                    doc_freq_map=fold_train_doc_freq,
+                )
+                top5 = self.selector.select(ranked)
                 fold_preds[qid] = top5
                 fold_runtimes[qid] = time.time() - t_q0
 
@@ -1349,9 +1366,7 @@ class OOFRunner:
         # public inference (predict.py): reranked candidates are fused with the
         # same fixed RRF weights before top-5 selection, so the disjoint score
         # evaluates the submission scoring policy instead of selector-only order.
-        from src.ranking.fusion import ReciprocalRankFusion
-
-        dj_ranker = ReciprocalRankFusion()
+        dj_ranker = _OOF_FIXED_RRF
         dj_train_doc_freq = compute_training_doc_frequencies(
             {qid: self.qrels_map[qid] for qid in train_ids if qid in self.qrels_map}
         )

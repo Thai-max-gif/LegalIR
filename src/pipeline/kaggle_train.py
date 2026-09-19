@@ -667,6 +667,8 @@ OFFICIAL_MACRO_CHUNKS = 219460
 OFFICIAL_TRAIN_QUERIES = 7000
 OFFICIAL_QRELS = 7637
 OFFICIAL_PUBLIC_QUERY_COUNT = 1000
+OFFICIAL_PRIVATE_QUERY_COUNT = 2080
+OFFICIAL_TEST_QUERY_COUNTS = {OFFICIAL_PUBLIC_QUERY_COUNT, OFFICIAL_PRIVATE_QUERY_COUNT}
 OFFICIAL_DATASET_NAME = "task1_canonical"
 OFFICIAL_VERSION = "v2"
 OFFICIAL_SCHEMA = "hierarchical_micro_macro_v2"
@@ -740,9 +742,9 @@ def validate_official_task1_identity(
         else:
             errors.append(f"Provided public_json_path does not exist: {pub_p}")
 
-        if public_count != OFFICIAL_PUBLIC_QUERY_COUNT:
+        if public_count not in OFFICIAL_TEST_QUERY_COUNTS:
             errors.append(
-                f"Official public queries count mismatch: expected {OFFICIAL_PUBLIC_QUERY_COUNT}, got {public_count}"
+                f"Official test queries count mismatch: expected one of {sorted(OFFICIAL_TEST_QUERY_COUNTS)}, got {public_count}"
             )
 
     if is_mock:
@@ -854,9 +856,9 @@ def validate_official_task1_identity(
         else:
             errors.append(f"Provided public_json_path does not exist: {pub_p}")
 
-        if public_count != OFFICIAL_PUBLIC_QUERY_COUNT:
+        if public_count not in OFFICIAL_TEST_QUERY_COUNTS:
             errors.append(
-                f"Official public queries count mismatch: expected {OFFICIAL_PUBLIC_QUERY_COUNT}, got {public_count}"
+                f"Official test queries count mismatch: expected one of {sorted(OFFICIAL_TEST_QUERY_COUNTS)}, got {public_count}"
             )
 
     is_valid = len(errors) == 0
@@ -1216,43 +1218,66 @@ def discover_public_test_file(
     data_dir: str | Path | None = None,
     repo_root: Path | None = None,
 ) -> Path | None:
-    """Discover public-official.json test file with robust relative and recursive fallback."""
+    """Discover official test file (public-official.json or private-official.json) with robust relative and recursive fallback."""
     if public_json_path is not None:
         p = Path(public_json_path)
         if p.exists():
             return p.resolve()
         return None
 
+    # Check environment variable overrides
+    env_test_file = os.environ.get("LEGALIR_TEST_FILE")
+    if env_test_file:
+        p = Path(env_test_file)
+        if p.is_file():
+            return p.resolve()
+        if data_dir is not None:
+            dp = Path(data_dir)
+            if (dp / env_test_file).is_file():
+                return (dp / env_test_file).resolve()
+        if repo_root is not None:
+            if (repo_root / env_test_file).is_file():
+                return (repo_root / env_test_file).resolve()
+
+    is_private_phase = os.environ.get("LEGALIR_TEST_PHASE", "").strip().lower() == "private"
+    if is_private_phase:
+        candidate_names = ["private-official.json", "private.json", "public-official.json", "public.json"]
+    else:
+        candidate_names = ["public-official.json", "public.json", "private-official.json", "private.json"]
+
     # Check relative to data_dir
     if data_dir is not None:
         dp = Path(data_dir)
-        for cand in [
-            dp / "public-official.json",
-            dp.parent / "public-official.json",
-            dp.parent.parent / "public-official.json",
-            dp.parent / "raw/public-official.json",
-            dp.parent / "shared/raw/public-official.json",
-        ]:
-            if cand.is_file():
-                return cand.resolve()
+        for cand_name in candidate_names:
+            for cand in [
+                dp / cand_name,
+                dp.parent / cand_name,
+                dp.parent.parent / cand_name,
+                dp.parent / f"raw/{cand_name}",
+                dp.parent / f"shared/raw/{cand_name}",
+            ]:
+                if cand.is_file():
+                    return cand.resolve()
 
     repo = repo_root or Path.cwd()
-    preferred_paths = [
-        Path("/kaggle/input/legalir-task1-clean-data/public-official.json"),
-        Path("/kaggle/input/legalir-task1-clean-data/artifacts/raw/public-official.json"),
-        Path("/kaggle/input/datasets/phucdangg/legalir-task1-clean-data/public-official.json"),
-        Path("/kaggle/input/legalir/public-official.json"),
-        Path("/kaggle/input/legalir/artifacts/raw/public-official.json"),
-        Path("/kaggle/input/legalir/artifacts/shared/raw/public-official.json"),
-        Path("/kaggle/input/legalir-task1/public-official.json"),
-        Path("/kaggle/input/legalir-task-1/public-official.json"),
-        Path("/kaggle/input/uit-dsc-2026-task1/public-official.json"),
-        Path("/kaggle/input/legalir-dataset/public-official.json"),
-        repo / "artifacts/shared/raw/public-official.json",
-        repo / "artifacts/raw/public-official.json",
-        repo / "public-official.json",
-        Path.cwd() / "public-official.json",
-    ]
+    preferred_paths = []
+    for cand_name in candidate_names:
+        preferred_paths.extend([
+            Path(f"/kaggle/input/legalir-task1-clean-data/{cand_name}"),
+            Path(f"/kaggle/input/legalir-task1-clean-data/artifacts/raw/{cand_name}"),
+            Path(f"/kaggle/input/datasets/phucdangg/legalir-task1-clean-data/{cand_name}"),
+            Path(f"/kaggle/input/legalir/{cand_name}"),
+            Path(f"/kaggle/input/legalir/artifacts/raw/{cand_name}"),
+            Path(f"/kaggle/input/legalir/artifacts/shared/raw/{cand_name}"),
+            Path(f"/kaggle/input/legalir-task1/{cand_name}"),
+            Path(f"/kaggle/input/legalir-task-1/{cand_name}"),
+            Path(f"/kaggle/input/uit-dsc-2026-task1/{cand_name}"),
+            Path(f"/kaggle/input/legalir-dataset/{cand_name}"),
+            repo / f"artifacts/shared/raw/{cand_name}",
+            repo / f"artifacts/raw/{cand_name}",
+            repo / cand_name,
+            Path.cwd() / cand_name,
+        ])
     for cand in preferred_paths:
         if cand.is_file():
             return cand.resolve()
@@ -1260,12 +1285,10 @@ def discover_public_test_file(
     # Recursive scan in /kaggle/input
     kaggle_input = Path("/kaggle/input")
     if kaggle_input.exists():
-        found = list(kaggle_input.rglob("public-official.json"))
-        if found:
-            return found[0].resolve()
-        found_pub = list(kaggle_input.rglob("public.json"))
-        if found_pub:
-            return found_pub[0].resolve()
+        for cand_name in candidate_names:
+            found = list(kaggle_input.rglob(cand_name))
+            if found:
+                return found[0].resolve()
 
     return None
 
@@ -1396,12 +1419,12 @@ def run_kaggle_pipeline(
             f"Canonical dataset parquet files missing in {canonical_data_dir}"
         )
 
-    # 2. Public Test Discovery (Fail-Fast)
+    # 2. Public / Private Test Discovery (Fail-Fast)
     public_test_file = discover_public_test_file(public_json_path, data_dir=canonical_data_dir, repo_root=root_path)
     if is_full and (public_test_file is None or not public_test_file.exists()):
-        raise FileNotFoundError(f"{run_mode_str} mode requires official public-official.json; refusing to proceed")
+        raise FileNotFoundError(f"{run_mode_str} mode requires official test query file (private-official.json or public-official.json); refusing to proceed")
     if is_gpu_smoke and public_json_path is not None and (public_test_file is None or not public_test_file.exists()):
-        raise FileNotFoundError(f"{run_mode_str} mode requires official public-official.json; refusing to proceed")
+        raise FileNotFoundError(f"{run_mode_str} mode requires official test query file (private-official.json or public-official.json); refusing to proceed")
 
     # 3. Hardware and GPU Device Allocation (P1.10)
     dense_device, reranker_device = resolve_pipeline_device_allocation(
@@ -1480,9 +1503,9 @@ def run_kaggle_pipeline(
         print(f"[+] Found Public Test Queries: {public_test_file}")
         with open(public_test_file, "r", encoding="utf-8") as f:
             public_data = json.load(f)
-        if (is_full or is_gpu_smoke) and len(public_data) != OFFICIAL_PUBLIC_QUERY_COUNT:
+        if (is_full or is_gpu_smoke) and len(public_data) not in OFFICIAL_TEST_QUERY_COUNTS:
             raise ValueError(
-                f"{run_mode_str.upper()} mode requires official public-official.json with exactly {OFFICIAL_PUBLIC_QUERY_COUNT:,} queries, got {len(public_data)}"
+                f"{run_mode_str.upper()} mode requires official test query file with one of {sorted(OFFICIAL_TEST_QUERY_COUNTS)} queries, got {len(public_data)}"
             )
     else:
         print("[!] public-official.json not found. Using train queries sample for inference verification.")
@@ -1681,7 +1704,9 @@ def run_kaggle_pipeline(
             device=dense_device,
             dimension=768,
         )
-        dense_batch = 32 if "cuda" in str(dense_device) else 32
+        # CUDA encodes 219k macro chunks: larger batches only reduce forward
+        # overhead (order-preserving concatenation; OOM still fails closed).
+        dense_batch = 128 if "cuda" in str(dense_device) else 32
         try:
             dense_retriever.fit(macro_chunks.to_dict("records"), batch_size=dense_batch, stage_name="corpus")
             dense_retriever.save(dense_dir)
@@ -2149,7 +2174,7 @@ def run_kaggle_pipeline(
                 for _, q_val in q_items
             ]
             q_embs_array = dense_ret.encode_queries(
-                q_texts, batch_size=32 if is_full else 16, stage_name="public_query"
+                q_texts, batch_size=64 if is_full else 16, stage_name="public_query"
             )
             for (qid, _), emb in zip(q_items, q_embs_array):
                 public_q_embs[str(qid)] = emb

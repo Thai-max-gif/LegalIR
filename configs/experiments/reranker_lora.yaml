@@ -13,6 +13,10 @@ lora_alpha: 16
 gradient_checkpointing: true
 learning_rate: 2.0e-5
 batch_size: 8
+# Inference-only micro-batch for GPU forward passes (training batch above is
+# untouched). Pairs are scored independently; larger values only reduce
+# per-forward overhead. OOM fallback still halves automatically.
+inference_batch_size: 64
 gradient_accumulation_steps: 2
 max_steps: 250
 warmup_ratio: 0.1

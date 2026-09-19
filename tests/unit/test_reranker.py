@@ -147,6 +147,23 @@ def test_run_all_reranker_default_follows_configured_enabled_flag():
     assert run_all_module._resolve_use_reranker({}, None)
 
 
+def test_inference_batch_size_plumbing_and_invariance():
+    """Configured inference batch must reach scoring; scores must not depend
+    on micro-batch size (pairs are scored independently)."""
+    seen = []
+
+    def mock_score(pairs, batch_size=16, max_length=384):
+        seen.append(batch_size)
+        return [float(len(q) + len(p)) for q, p in pairs]
+
+    reranker = CrossEncoderReranker(model_name="mock", score_fn=mock_score)
+    pairs = [(f"query {i}", f"passage number {i} with padding text") for i in range(25)]
+    small = reranker.score_pairs(pairs, batch_size=8)
+    large = reranker.score_pairs(pairs, batch_size=64)
+    assert small == large
+    assert seen == [8, 64]
+
+
 def test_reranker_batch_exact_parity_with_individual_rerank():
     def mock_score(pairs, batch_size=16, max_length=384):
         scores = []
