@@ -48,3 +48,38 @@ def test_duplicate_groups(dataset_dir: Path):
     with open(dup_path, "r", encoding="utf-8") as f:
         groups = json.load(f)
     assert len(groups) == EXPECTED_DUPLICATE_GROUPS
+
+
+def test_private_queries_count_and_isolation(dataset_dir: Path):
+    priv_path = dataset_dir / "private-official.json"
+    if not priv_path.is_file():
+        priv_path = Path("kaggle_dataset/private-official.json")
+    if not priv_path.is_file():
+        pytest.skip("private-official.json not found in dataset directory.")
+
+    with open(priv_path, "r", encoding="utf-8") as f:
+        priv_data = json.load(f)
+
+    assert len(priv_data) == 2080, f"Expected 2080 private queries, got {len(priv_data)}"
+
+    # Schema integrity
+    for qid, obj in priv_data.items():
+        assert isinstance(qid, str) and qid.isdigit()
+        assert isinstance(obj, dict) and "question" in obj and "answer" in obj
+        assert isinstance(obj["question"], str) and len(obj["question"]) > 0
+        assert obj["answer"] is None
+
+    # Complete query ID isolation against train and public
+    queries = pq.read_table(dataset_dir / "queries_train.parquet")
+    train_qids = set(queries["query_id"].to_pylist())
+    priv_qids = set(priv_data.keys())
+    assert len(priv_qids & train_qids) == 0, "Leakage: private query IDs overlap with train queries!"
+
+    pub_path = dataset_dir / "public-official.json"
+    if not pub_path.is_file():
+        pub_path = Path("kaggle_dataset/public-official.json")
+    if pub_path.is_file():
+        with open(pub_path, "r", encoding="utf-8") as f:
+            pub_data = json.load(f)
+        pub_qids = set(pub_data.keys())
+        assert len(priv_qids & pub_qids) == 0, "Overlap: private query IDs overlap with public queries!"

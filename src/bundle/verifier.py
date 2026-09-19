@@ -126,8 +126,8 @@ def verify_production_bundle(
                     errors.append(f"dataset_provenance doc_count ({ds_prov['doc_count']}) != canonical v2 (8532)")
                 if ds_prov.get("train_query_count") is not None and ds_prov["train_query_count"] != 7000:
                     errors.append(f"dataset_provenance train_query_count ({ds_prov['train_query_count']}) != canonical v2 (7000)")
-                if ds_prov.get("public_query_count") is not None and ds_prov["public_query_count"] != 1000:
-                    errors.append(f"dataset_provenance public_query_count ({ds_prov['public_query_count']}) != canonical v2 (1000)")
+                if ds_prov.get("public_query_count") is not None and ds_prov["public_query_count"] not in (1000, 2080):
+                    errors.append(f"dataset_provenance public_query_count ({ds_prov['public_query_count']}) not in canonical official counts (1000, 2080)")
             except Exception as e:
                 errors.append(f"Failed semantic check on dataset_provenance.json: {e}")
 

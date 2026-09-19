@@ -294,8 +294,8 @@ def verify_colab_report_invariants(
             errors.append(f"Dataset identity train_queries mismatch: expected 7000, got {ds.get('train_queries')}")
         if ds.get("qrels") != 7637:
             errors.append(f"Dataset identity qrels mismatch: expected 7637, got {ds.get('qrels')}")
-        if ds.get("public_queries") != 1000:
-            errors.append(f"Dataset identity public_queries mismatch: expected 1000, got {ds.get('public_queries')}")
+        if ds.get("public_queries") not in (1000, 2080):
+            errors.append(f"Dataset identity public_queries mismatch: expected 1000 or 2080, got {ds.get('public_queries')}")
 
     # 4. Dense Pipeline
     if report.get("dense_backend") != "faiss":

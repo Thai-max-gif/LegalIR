@@ -60,6 +60,7 @@ artifacts/raw/
 artifacts/shared/
 train.json
 public-official.json
+private-official.json
 selected-contexts.zip
 selected-contexts/
 

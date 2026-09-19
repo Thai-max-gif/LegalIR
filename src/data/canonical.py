@@ -19,6 +19,8 @@ EXPECTED_MACRO = 219460
 EXPECTED_TRAIN_QUERIES = 7000
 EXPECTED_QRELS = 7637
 EXPECTED_PUBLIC_QUERIES = 1000
+EXPECTED_PRIVATE_QUERIES = 2080
+VALID_TEST_QUERY_COUNTS = {EXPECTED_PUBLIC_QUERIES, EXPECTED_PRIVATE_QUERIES}
 EXPECTED_DUPLICATE_GROUPS = 4
 
 
@@ -86,7 +88,7 @@ class CanonicalDatasetIdentity:
             and self.num_macro == EXPECTED_MACRO
             and self.num_train_queries == EXPECTED_TRAIN_QUERIES
             and self.num_qrels == EXPECTED_QRELS
-            and self.num_public_queries == EXPECTED_PUBLIC_QUERIES
+            and self.num_public_queries in VALID_TEST_QUERY_COUNTS
             and self.num_duplicate_groups == EXPECTED_DUPLICATE_GROUPS
         )
 
@@ -191,17 +193,21 @@ def verify_canonical_dataset(
     else:
         errors.append(f"Missing {qrels_train_p.name}")
 
-    if public_p.is_file():
+    public_p = d / "public-official.json"
+    private_p = d / "private-official.json"
+    test_p = public_p if public_p.is_file() else private_p
+
+    if test_p.is_file():
         try:
-            with open(public_p, "r", encoding="utf-8") as f:
+            with open(test_p, "r", encoding="utf-8") as f:
                 pub_data = json.load(f)
             num_public_queries = len(pub_data)
-            if num_public_queries != EXPECTED_PUBLIC_QUERIES:
-                errors.append(f"Expected {EXPECTED_PUBLIC_QUERIES} public queries, found {num_public_queries}")
+            if num_public_queries not in VALID_TEST_QUERY_COUNTS:
+                errors.append(f"Expected test queries in {sorted(VALID_TEST_QUERY_COUNTS)}, found {num_public_queries}")
         except Exception as e:
-            errors.append(f"Failed parsing public-official.json: {e}")
+            errors.append(f"Failed parsing {test_p.name}: {e}")
     else:
-        errors.append(f"Missing {public_p.name}")
+        errors.append(f"Missing test queries file ({public_p.name} or {private_p.name})")
 
     resolved_dup_p = resolve_duplicate_groups_path(d)
     if resolved_dup_p and resolved_dup_p.is_file():

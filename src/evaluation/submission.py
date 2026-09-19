@@ -28,12 +28,14 @@ def validate_submission(
     expected_qids: set[str] | None = None,
     corpus_doc_ids: set[str] | None = None,
     public_json: str | Path | None = None,
+    test_json: str | Path | None = None,
     data_dir: str | Path | None = None,
     raise_on_error: bool | None = None,
 ) -> dict[str, Any]:
     """Validate submission structure against competition rules.
 
     Accepts either a loaded dictionary of predictions or a filepath to submission.json.
+    Supports both public-official.json and private-official.json via public_json or test_json.
     """
     errors: list[str] = []
 
@@ -54,11 +56,12 @@ def validate_submission(
             raise ValueError(msg)
         return {"is_valid": False, "errors": [msg], "total_queries": 0}
 
-    # If public_json is provided, load expected query IDs
-    if expected_qids is None and public_json is not None and Path(public_json).exists():
-        with open(public_json, "r", encoding="utf-8") as f:
-            pub_data = json.load(f)
-        expected_qids = set(str(k) for k in pub_data.keys())
+    # If test_json / public_json is provided, load expected query IDs
+    test_file_path = test_json or public_json
+    if expected_qids is None and test_file_path is not None and Path(test_file_path).exists():
+        with open(test_file_path, "r", encoding="utf-8") as f:
+            t_data = json.load(f)
+        expected_qids = set(str(k) for k in t_data.keys())
 
     # If data_dir is provided, load valid corpus document IDs
     if corpus_doc_ids is None and data_dir is not None:
