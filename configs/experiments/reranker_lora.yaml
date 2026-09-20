@@ -17,10 +17,11 @@ batch_size: 8
 # untouched). Pairs are scored independently; larger values only reduce
 # per-forward overhead. OOM fallback still halves automatically.
 inference_batch_size: 64
+rerank_k: 80
 gradient_accumulation_steps: 2
 max_steps: 250
 warmup_ratio: 0.1
-max_length: 384
+max_length: 512
 precision: "bf16"
 fp16: false
 device: "auto"
