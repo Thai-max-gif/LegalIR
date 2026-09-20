@@ -1826,8 +1826,8 @@ def run_kaggle_pipeline(
         config_path=resolved_runtime_config,
         reranker_config_path=resolved_reranker_config,
         num_folds=2 if (is_smoke or is_gpu_smoke) else 5,
-        candidate_k=20 if (is_smoke or is_gpu_smoke) else 150,
-        rerank_k=10 if (is_smoke or is_gpu_smoke) else int(reranker_cfg.get("rerank_k", 80)),
+        candidate_k=20 if (is_smoke or is_gpu_smoke) else 200,
+        rerank_k=10 if (is_smoke or is_gpu_smoke) else int(reranker_cfg.get("rerank_k", 100)),
         use_reranker=True,
         reranker_model="mock" if is_smoke else "BAAI/bge-reranker-v2-m3",
         train_reranker_per_fold=(not is_smoke),
@@ -2199,8 +2199,8 @@ def run_kaggle_pipeline(
         str(qid): (q_val.get("question", "") if isinstance(q_val, dict) else str(q_val))
         for qid, q_val in q_items
     }
-    pipeline.candidate_k = 150 if is_full else 20
-    pipeline.rerank_k = int(reranker_cfg.get("rerank_k", 80)) if is_full else 10
+    pipeline.candidate_k = 200 if is_full else 20
+    pipeline.rerank_k = int(reranker_cfg.get("rerank_k", 100)) if is_full else 10
 
     predictions = pipeline.predict_batch(
         public_query_dict,

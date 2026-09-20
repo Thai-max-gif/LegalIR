@@ -249,6 +249,7 @@ class OOFRunner:
             self.evidence_builder = EvidencePackBuilder(
                 chunks_path=chunks_path,
                 doc_metadata=self.doc_map,
+                max_chunks=3,
             )
 
     def load_retrievers(self) -> None:
