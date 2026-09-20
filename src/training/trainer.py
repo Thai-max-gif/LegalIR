@@ -458,11 +458,44 @@ def setup_peft_model(
     lora_alpha: int = 32,
     lora_dropout: float = 0.05,
     target_modules: list[str] | None = None,
+    pretrained_adapter: str | None = None,
 ) -> tuple[nn.Module, dict[str, Any]]:
     """
     Applies PEFT LoRA to the model with verified target module inspection.
+    If pretrained_adapter is provided, loads the existing adapter with is_trainable=True
+    for continual fine-tuning (warm start).
     """
-    from peft import LoraConfig, TaskType, get_peft_model
+    from peft import LoraConfig, TaskType, get_peft_model, PeftModel
+
+    # Check if warm-start adapter is requested and applicable
+    if pretrained_adapter:
+        model_hidden = getattr(getattr(model, "config", None), "hidden_size", 0)
+        # Only attach real HF adapter if model is full-sized (not a tiny mock BERT)
+        if model_hidden >= 256:
+            print(f"[+] Warm-start: loading existing LoRA adapter from '{pretrained_adapter}' with is_trainable=True...")
+            try:
+                peft_model = PeftModel.from_pretrained(model, pretrained_adapter, is_trainable=True)
+                for name, param in peft_model.named_parameters():
+                    if "lora_" in name:
+                        param.requires_grad = True
+                trainable_params = sum(p.numel() for p in peft_model.parameters() if p.requires_grad)
+                total_params = sum(p.numel() for p in peft_model.parameters())
+                trainable_pct = (trainable_params / total_params * 100.0) if total_params > 0 else 0.0
+                active_cfg = getattr(peft_model, "peft_config", {}).get("default", None)
+                meta = {
+                    "lora_r": getattr(active_cfg, "r", lora_r),
+                    "lora_alpha": getattr(active_cfg, "lora_alpha", lora_alpha),
+                    "lora_dropout": getattr(active_cfg, "lora_dropout", lora_dropout),
+                    "target_modules": getattr(active_cfg, "target_modules", target_modules),
+                    "trainable_params": trainable_params,
+                    "total_params": total_params,
+                    "trainable_percent": round(trainable_pct, 4),
+                    "pretrained_adapter": pretrained_adapter,
+                    "warm_start": True,
+                }
+                return peft_model, meta
+            except Exception as e:
+                print(f"[!] Warning: Failed loading warm-start adapter '{pretrained_adapter}': {e}. Falling back to clean LoRA initialization.")
 
     matched_targets = find_target_modules(model, target_modules)
     if not matched_targets:
@@ -595,6 +628,14 @@ class RerankerTrainer:
         use_lora = self.config.get("use_lora", True)
         self.peft_meta: dict[str, Any] = {}
         if use_lora:
+            pretrained_adapter = (
+                self.config.get("pretrained_lora_path")
+                or self.config.get("pretrained_adapter_path")
+                or self.config.get("warm_start_adapter")
+                or os.environ.get("LEGALIR_WARM_START_ADAPTER")
+            )
+            if str(pretrained_adapter).strip().lower() in ("auto", "latest", "true", "1"):
+                pretrained_adapter = os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
             lora_cfg = self.config.get("lora", {})
             self.model, self.peft_meta = setup_peft_model(
                 model=model,
@@ -602,6 +643,7 @@ class RerankerTrainer:
                 lora_alpha=lora_cfg.get("lora_alpha", self.config.get("lora_alpha", 32)),
                 lora_dropout=lora_cfg.get("lora_dropout", self.config.get("lora_dropout", 0.05)),
                 target_modules=lora_cfg.get("target_modules", self.config.get("target_modules", None)),
+                pretrained_adapter=str(pretrained_adapter).strip() if pretrained_adapter else None,
             )
         else:
             self.model = model
