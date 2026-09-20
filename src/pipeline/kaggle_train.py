@@ -1241,9 +1241,9 @@ def discover_public_test_file(
 
     is_private_phase = os.environ.get("LEGALIR_TEST_PHASE", "").strip().lower() == "private"
     if is_private_phase:
-        candidate_names = ["private-official.json", "private.json", "public-official.json", "public.json"]
+        candidate_names = ["private-official.json", "private.json"]
     else:
-        candidate_names = ["public-official.json", "public.json", "private-official.json", "private.json"]
+        candidate_names = ["public-official.json", "public.json"]
 
     # Check relative to data_dir
     if data_dir is not None:
@@ -1289,6 +1289,12 @@ def discover_public_test_file(
             found = list(kaggle_input.rglob(cand_name))
             if found:
                 return found[0].resolve()
+
+    if is_private_phase:
+        raise FileNotFoundError(
+            "LEGALIR_TEST_PHASE=private is requested, but private test queries (private-official.json) could not be found. "
+            "Refusing to silently fallback to public test queries."
+        )
 
     return None
 
@@ -1498,14 +1504,18 @@ def run_kaggle_pipeline(
     if not val_report.get("is_valid") and (is_full or is_gpu_smoke):
         raise ValueError(f"Canonical dataset validation failed in {run_mode_str.upper()} mode: {val_report.get('errors')}")
 
-    # Single load and validation of public test data (no duplicate reads)
+    # Single load and validation of test queries (public 1,000 or private 2,080)
+    is_priv = bool(os.environ.get("LEGALIR_TEST_PHASE", "").strip().lower() == "private" or (public_test_file is not None and "private" in public_test_file.name.lower()))
+    expected_phase_count = OFFICIAL_PRIVATE_QUERY_COUNT if is_priv else OFFICIAL_PUBLIC_QUERY_COUNT
+    phase_label = "PRIVATE" if is_priv else "PUBLIC"
+
     if public_test_file and public_test_file.exists():
-        print(f"[+] Found Public Test Queries: {public_test_file}")
+        print(f"[+] Found {phase_label} Test Queries: {public_test_file}")
         with open(public_test_file, "r", encoding="utf-8") as f:
             public_data = json.load(f)
-        if (is_full or is_gpu_smoke) and len(public_data) not in OFFICIAL_TEST_QUERY_COUNTS:
+        if (is_full or is_gpu_smoke) and len(public_data) != expected_phase_count:
             raise ValueError(
-                f"{run_mode_str.upper()} mode requires official test query file with one of {sorted(OFFICIAL_TEST_QUERY_COUNTS)} queries, got {len(public_data)}"
+                f"{run_mode_str.upper()} mode in {phase_label} phase requires official test query file with exactly {expected_phase_count} queries, got {len(public_data)}"
             )
     else:
         print("[!] public-official.json not found. Using train queries sample for inference verification.")

@@ -184,6 +184,7 @@ def verify_acceptance(
     disjoint_report: Mapping[str, Any] | None,
     submission: Mapping[str, Any] | None,
     artifacts_dir: str | Path | None = None,
+    expected_submission_qids: set[str] | list[str] | None = None,
 ) -> dict[str, Any]:
     """Verify one FULL attempt. Returns recomputed metrics + verdict + reasons.
 
@@ -328,6 +329,13 @@ def verify_acceptance(
     if not isinstance(submission, Mapping) or not submission:
         fail("submission is absent")
     else:
+        if expected_submission_qids is not None:
+            exp_sub_set = {str(x) for x in expected_submission_qids}
+            act_sub_set = {str(k) for k in submission.keys()}
+            if act_sub_set != exp_sub_set:
+                missing = sorted(exp_sub_set - act_sub_set)[:5]
+                extra = sorted(act_sub_set - exp_sub_set)[:5]
+                fail(f"submission query coverage mismatch: missing={missing} extra={extra}")
         for qid, val in submission.items():
             ans = val.get("answer") if isinstance(val, Mapping) else val
             if not isinstance(ans, list) or len(ans) != 5 or len({str(x) for x in ans}) != 5:

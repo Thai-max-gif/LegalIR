@@ -97,3 +97,24 @@ def test_forecast_empty_is_unknown_never_fitting():
                                eval_queries=8400)
     assert out2["complete_measurements"] is False
     assert out2["fits_strict_300m"] is False
+
+
+def test_forecast_cold_total_with_private_test_count():
+    """Retime cold-run forecast with 2,080 private queries under measured A100 stage bounds."""
+    train_jobs = [{"updates": n, "sec_per_update": 0.22, "load_save_overhead": 20.0}
+                  for n in (700, 700, 700, 700, 700, 700, 875)]
+    out = forecast_cold_total(
+        setup_index_seconds=3338.0,
+        static_retrieval_seconds=1800.0,
+        train_jobs=train_jobs,
+        eval_queries=8400,
+        eval_qps=2.2,
+        fusion_seconds=300.0,
+        final_reload_public_seconds=995.5,
+        delivery_seconds=390.0,
+    )
+    assert out["complete_measurements"] is True
+    assert out["total_seconds"] <= NOMINAL_BUDGET_SECONDS
+    assert out["total_seconds"] < STRICT_GATE_SECONDS
+    assert out["fits_nominal_270m"] is True
+    assert out["fits_strict_300m"] is True

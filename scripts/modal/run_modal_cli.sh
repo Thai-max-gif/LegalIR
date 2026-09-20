@@ -50,6 +50,7 @@ PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
 MODAL_BIN="${MODAL_BIN:-.venv/bin/modal}"
 
 HF_PUBLIC_FLAG=""
+PRIVATE_FLAG=""
 DETACH_MODE=0
 SHOW_HELP=0
 
@@ -69,6 +70,14 @@ for arg in "$@"; do
       fi
       HF_PUBLIC_FLAG="--no-hf-allow-public-repo"
       ;;
+    --private)
+      if [ -n "$PRIVATE_FLAG" ]; then
+        echo "[!] Duplicate --private flag." >&2
+        exit 2
+      fi
+      PRIVATE_FLAG="--private"
+      export LEGALIR_TEST_PHASE="private"
+      ;;
     --detach)
       if [ "$DETACH_MODE" -ne 0 ]; then
         echo "[!] Duplicate --detach flag." >&2
@@ -80,7 +89,7 @@ for arg in "$@"; do
       SHOW_HELP=1
       ;;
     *)
-      echo "[!] Unknown argument: $arg (expected --hf-allow-public-repo, --detach)" >&2
+      echo "[!] Unknown argument: $arg (expected --hf-allow-public-repo, --detach, --private)" >&2
       exit 2
       ;;
   esac
@@ -88,12 +97,14 @@ done
 
 if [ "$SHOW_HELP" -eq 1 ]; then
   cat <<'EOF'
-Usage: scripts/modal/run_modal_cli.sh [--hf-allow-public-repo] [--detach]
+Usage: scripts/modal/run_modal_cli.sh [--hf-allow-public-repo] [--detach] [--private]
 
 Recommended Modal entrypoint. Validates CPU provenance before dispatch.
   --hf-allow-public-repo   Explicit opt-in to push to an existing PUBLIC HF
                            repo (recorded in manifest). Absent means
                            private-only (fail closed).
+  --private                Explicit opt-in to evaluate Private test queries
+                           (2,080 queries) instead of default public (1,000 queries).
   --detach                 Explicit opt-in to `modal run --detach` (app survives
                            client disconnect). Default is attached: client
                            disconnect terminates remote tasks even with a
@@ -157,6 +168,9 @@ if [ -n "$HF_PUBLIC_FLAG" ]; then
   MODAL_ARGS+=("$HF_PUBLIC_FLAG")
 else
   MODAL_ARGS+=("--no-hf-allow-public-repo")
+fi
+if [ -n "$PRIVATE_FLAG" ]; then
+  MODAL_ARGS+=("$PRIVATE_FLAG")
 fi
 
 DETACH_OPT=""

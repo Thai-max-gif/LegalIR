@@ -1,6 +1,6 @@
 # Historical A100 Timing Evidence
 
-Reviewed 2026-09-17. This is a historical measurement record, **not approval of the current candidate**. Current blockers and proposed work are in [../fix.md](../fix.md); operational instructions are in the [launch guide](README_A100_LAUNCH.md).
+Reviewed 2026-09-17. This is a historical measurement record, **not approval of the current candidate**. Current blockers and proposed work are in [HISTORY_FIXES.md](HISTORY_FIXES.md); operational instructions are in the [launch guide](README_A100_LAUNCH.md).
 
 ## Source and limits
 

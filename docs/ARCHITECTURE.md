@@ -1,6 +1,6 @@
 # LegalIR System Architecture
 
-This describes the pipeline, not release readiness. See [../fix.md](../fix.md) for the current candidate review and [release workflow](REPRODUCIBLE_TRAINING_WORKFLOW.md) for qualification.
+This describes the pipeline, not release readiness. See [HISTORY_FIXES.md](HISTORY_FIXES.md) for the historical candidate review and [release workflow](REPRODUCIBLE_TRAINING_WORKFLOW.md) for qualification.
 
 ## Data and evaluation boundaries
 

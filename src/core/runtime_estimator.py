@@ -6,6 +6,7 @@ Kaggle Final and Artifact Factory execution times with explicit uncertainty.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Mapping
 
 
@@ -13,11 +14,12 @@ def estimate_kaggle_final_runtime(
     telemetry: Mapping[str, Any],
     safety_factor: float = 1.25,
     max_session_hours: float = 9.0,
+    test_queries: int | None = None,
 ) -> Dict[str, Any]:
     """
     Project Kaggle Final execution time based on measured hardware telemetry.
     Kaggle Final trains strictly ONE final BGE LoRA adapter (875 steps) on all 7,000 queries,
-    reranks 1,000 public candidates under frozen fusion, and validates submission.
+    reranks public (1,000) or private (2,080) candidates under frozen fusion, and validates submission.
     """
     if telemetry.get("is_mock", False) or "Mock" in str(telemetry.get("gpu_name", "")):
         raise ValueError("Mock smoke telemetry cannot authorize final Kaggle runtime projection.")
@@ -35,20 +37,31 @@ def estimate_kaggle_final_runtime(
     final_optimizer_steps = 875
     projected_training_sec = final_optimizer_steps * sec_per_step
 
-    # Public reranking inference scaling:
-    # Scale from measured execution on public queries subset
+    # Test reranking inference scaling (supports public 1,000 and private 2,080 queries):
+    # Scale from measured execution on queries subset
     subset_public = int(telemetry.get("subset_counts", {}).get("public_queries", 16))
     subset_eval_sec = float(stage_timings.get("prediction_eval_sec", 12.48))
     per_query_inference_sec = subset_eval_sec / max(1, subset_public)
-    projected_inference_sec = per_query_inference_sec * 1000  # 1,000 public queries
+
+    if test_queries is not None:
+        target_test_queries = int(test_queries)
+    elif os.environ.get("LEGALIR_TEST_PHASE", "").strip().lower() == "private":
+        target_test_queries = 2080
+    else:
+        target_test_queries = int(telemetry.get("subset_counts", {}).get("public_queries", 1000))
+        if target_test_queries <= 0 or target_test_queries > 5000:
+            target_test_queries = 1000
+
+    projected_inference_sec = per_query_inference_sec * target_test_queries
 
     stages = {
         "final_reranker_training_sec": round(projected_training_sec, 2),
         "public_reranking_sec": round(projected_inference_sec, 2),
+        "test_reranking_sec": round(projected_inference_sec, 2),
         "verification_and_packaging_sec": 30.0,
     }
 
-    raw_total_sec = sum(stages.values())
+    raw_total_sec = projected_training_sec + projected_inference_sec + 30.0
     total_projected_sec = raw_total_sec * safety_factor
     total_projected_hours = total_projected_sec / 3600.0
 

@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--corpus-ids", required=True, help="Corpus document IDs JSON list.")
     ap.add_argument("--disjoint-report", default=None)
     ap.add_argument("--submission", default=None)
+    ap.add_argument("--test-queries", default=None, help="Optional test queries JSON (public-official.json or private-official.json) to verify submission keys.")
     args = ap.parse_args(argv)
 
     base = Path(args.artifacts_dir) if args.artifacts_dir else None
@@ -59,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     corpus = _load_json(_resolve(base, args.corpus_ids))
     disjoint = _load_json(_resolve(base, args.disjoint_report))
     submission = _load_json(_resolve(base, args.submission))
+    test_queries = _load_json(_resolve(base, args.test_queries))
+    expected_sub_qids = set(test_queries.keys()) if isinstance(test_queries, dict) else None
 
     result = verify_acceptance(
         receipt,
@@ -69,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         disjoint_report=disjoint if isinstance(disjoint, dict) else None,
         submission=submission if isinstance(submission, dict) else None,
         artifacts_dir=base,
+        expected_submission_qids=expected_sub_qids,
     )
     print(json.dumps(result, indent=2, default=str))
     return 0 if result["verdict"] == "PASS" else 1

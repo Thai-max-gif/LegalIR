@@ -1,6 +1,6 @@
 # Reproducible Training Workflow
 
-Reviewed 2026-09-17. **The current uncommitted repair candidate is not a qualified release.** Read [../fix.md](../fix.md) before starting this sequence. Operational commands and supervision belong in the [A100 launch guide](README_A100_LAUNCH.md).
+Reviewed 2026-09-17. **The current uncommitted repair candidate is not a qualified release.** Read [HISTORY_FIXES.md](HISTORY_FIXES.md) before starting this sequence. Operational commands and supervision belong in the [A100 launch guide](README_A100_LAUNCH.md).
 
 ## 1. Finish and verify the candidate locally
 

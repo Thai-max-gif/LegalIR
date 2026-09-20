@@ -138,6 +138,8 @@ def _resolve_volume_mount() -> Path:
 @app.function(
     image=image,
     gpu="A100",
+    cpu=8.0,
+    memory=32768,
     timeout=TIMEOUT_SECONDS,
     volumes={VOLUME_MOUNT: volume},
     secrets=[
@@ -239,6 +241,10 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
             sys.path.insert(0, str(repo_dir))
         os.chdir(repo_dir)
 
+        # Set test phase in remote environment
+        if os.environ.get("LEGALIR_TEST_PHASE", "").strip().lower() == "private":
+            print("[+] Remote container initialized with LEGALIR_TEST_PHASE=private (2,080 queries)", flush=True)
+
         # 2. CPU provenance gate before any expensive work (Kaggle T4x2 gate).
         from scripts.colab.bootstrap import prepare_dataset, verify_launch
 
@@ -334,7 +340,7 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
     return _attempt_report
 
 @app.local_entrypoint()
-def main(hf_allow_public_repo: bool = False):
+def main(hf_allow_public_repo: bool = False, private: bool = False):
     import sys
     # Try to grab the SHA from local git if we are in the repo, or from env
     expected_sha = os.environ.get("LEGALIR_COMMIT_SHA")
@@ -344,6 +350,9 @@ def main(hf_allow_public_repo: bool = False):
         except Exception:
             print("Error: Could not determine expected Git SHA. Please set LEGALIR_COMMIT_SHA.", file=sys.stderr)
             sys.exit(1)
+
+    # Determine test phase
+    test_phase = "private" if (private or os.environ.get("LEGALIR_TEST_PHASE", "").strip().lower() == "private") else "public"
 
     # Defense in depth: repeat CPU provenance validation before .remote().
     # The wrapper script is the recommended entrypoint because invoking Modal
@@ -364,7 +373,8 @@ def main(hf_allow_public_repo: bool = False):
         sys.exit(2)
 
     print(f"[*] Dispatching A100 training job to Modal for commit: {expected_sha}")
-    print("[*] This process will run remotely on an A100 GPU and automatically terminate after 5 hours max.")
+    print(f"[*] Evaluation Phase: {test_phase.upper()} ({'2,080 queries' if test_phase == 'private' else '1,000 queries'})")
+    print("[*] This process will run remotely on an A100 GPU (8 vCPU, 32GB RAM) and automatically terminate after 5 hours max.")
     print("[*] Durable outputs use /root/legalir_volume/<sha>/attempts/<id>/ on the 'legalir-production' Volume.")
     print("[*] Supervision: default `modal run` is ATTACHED — client disconnect terminates")
     print("    remote tasks even with a persistent Volume. Keep the client connected (stable")

@@ -307,3 +307,99 @@ def test_failed_shutdown_fails(tmp_path):
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
                             submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS" and any("shutdown" in r for r in out["reasons"])
+
+
+def test_acceptance_verifier_2080_private_queries_submission(tmp_path):
+    """Verify acceptance verifier works with 2,080 private round queries."""
+    splits = _five_fold_splits()
+    corpus = _corpus(n=50)
+    preds = _perfect_predictions(splits, corpus)
+    receipt = _positive_receipt(tmp_path, splits, preds)
+
+    # 1. Valid 2080-query submission: every answer exactly 5 unique valid corpus documents
+    sub_2080 = {
+        f"priv_{i}": {"answer": [f"d{j % 50}" for j in range(i, i + 5)]}
+        for i in range(2080)
+    }
+    expected_qids = set(sub_2080.keys())
+
+    out_pass = verify_acceptance(
+        receipt,
+        oof_predictions=preds,
+        qrels=_qrels_for(splits),
+        splits=splits,
+        corpus_doc_ids=set(corpus),
+        disjoint_report=_disjoint_report(),
+        submission=sub_2080,
+        artifacts_dir=tmp_path / "artifacts",
+        expected_submission_qids=expected_qids,
+    )
+    assert out_pass["verdict"] == "PASS", f"Valid 2080 submission failed: {out_pass['reasons']}"
+
+    # 2. Incomplete 2080-query submission (missing query) fails
+    sub_incomplete = dict(sub_2080)
+    sub_incomplete.pop("priv_0")
+    out_incomp = verify_acceptance(
+        receipt,
+        oof_predictions=preds,
+        qrels=_qrels_for(splits),
+        splits=splits,
+        corpus_doc_ids=set(corpus),
+        disjoint_report=_disjoint_report(),
+        submission=sub_incomplete,
+        artifacts_dir=tmp_path / "artifacts",
+        expected_submission_qids=expected_qids,
+    )
+    assert out_incomp["verdict"] != "PASS"
+    assert any("mismatch" in r for r in out_incomp["reasons"])
+
+    # 3. Submission with non-5 length answer fails
+    sub_len = dict(sub_2080)
+    sub_len["priv_1"] = {"answer": ["d1", "d2", "d3"]}
+    out_len = verify_acceptance(
+        receipt,
+        oof_predictions=preds,
+        qrels=_qrels_for(splits),
+        splits=splits,
+        corpus_doc_ids=set(corpus),
+        disjoint_report=_disjoint_report(),
+        submission=sub_len,
+        artifacts_dir=tmp_path / "artifacts",
+        expected_submission_qids=expected_qids,
+    )
+    assert out_len["verdict"] != "PASS"
+    assert any("exactly 5 unique documents" in r for r in out_len["reasons"])
+
+    # 4. Submission with duplicate doc IDs fails
+    sub_dup = dict(sub_2080)
+    sub_dup["priv_2"] = {"answer": ["d1", "d1", "d2", "d3", "d4"]}
+    out_dup = verify_acceptance(
+        receipt,
+        oof_predictions=preds,
+        qrels=_qrels_for(splits),
+        splits=splits,
+        corpus_doc_ids=set(corpus),
+        disjoint_report=_disjoint_report(),
+        submission=sub_dup,
+        artifacts_dir=tmp_path / "artifacts",
+        expected_submission_qids=expected_qids,
+    )
+    assert out_dup["verdict"] != "PASS"
+    assert any("exactly 5 unique documents" in r for r in out_dup["reasons"])
+
+    # 5. Submission with invalid (unknown) doc ID fails
+    sub_inv = dict(sub_2080)
+    sub_inv["priv_3"] = {"answer": ["d1", "d2", "d3", "d4", "unknown_doc_999"]}
+    out_inv = verify_acceptance(
+        receipt,
+        oof_predictions=preds,
+        qrels=_qrels_for(splits),
+        splits=splits,
+        corpus_doc_ids=set(corpus),
+        disjoint_report=_disjoint_report(),
+        submission=sub_inv,
+        artifacts_dir=tmp_path / "artifacts",
+        expected_submission_qids=expected_qids,
+    )
+    assert out_inv["verdict"] != "PASS"
+    assert any("invalid document ID" in r for r in out_inv["reasons"])
