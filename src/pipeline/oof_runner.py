@@ -631,11 +631,36 @@ class OOFRunner:
                 t_q0 = time.time()
                 q_emb = self.train_query_embeddings.get(qid)
 
+                branch_cands = None
+                if self._static_branch_cache is not None:
+                    if qid not in self._static_branch_cache:
+                        exact_cands = self.exact.search(q_text, top_k=10) if self.exact else []
+                        bm25_cands = self.bm25.search(q_text, top_k=max(80, self.candidate_k)) if self.bm25 else []
+                        pyvi_cands = self.bm25_pyvi.search(q_text, top_k=max(80, self.candidate_k)) if self.bm25_pyvi else []
+                        dense_cands = self.dense.retrieve(q_text, top_k=max(80, self.candidate_k), q_emb=q_emb) if self.dense else []
+                        self._static_branch_cache[qid] = {
+                            "exact": exact_cands,
+                            "bm25": bm25_cands,
+                            "bm25_pyvi": pyvi_cands,
+                            "dense": dense_cands,
+                            "bm25_80": bm25_cands[:80],
+                            "pyvi_80": pyvi_cands[:80],
+                            "dense_80": dense_cands[:80],
+                        }
+                    cached_s = self._static_branch_cache[qid]
+                    branch_cands = {
+                        "exact": cached_s.get("exact", []),
+                        "bm25": cached_s.get("bm25", []),
+                        "bm25_pyvi": cached_s.get("bm25_pyvi", []),
+                        "dense": cached_s.get("dense", []),
+                    }
+
                 candidates: list[CandidateRecord] = hybrid_engine.search_candidates(
                     query=q_text,
                     top_k=self.candidate_k,
                     exclude_qid=str(qid),
                     q_emb=q_emb,
+                    branch_candidates=branch_cands,
                 )
                 cand_ids = [str(c["doc_id"]) for c in candidates]
                 fold_candidates[qid] = cand_ids
@@ -1383,11 +1408,36 @@ class OOFRunner:
                 t_q0 = time.time()
                 q_emb = self.train_query_embeddings.get(qid)
 
+                branch_cands = None
+                if self._static_branch_cache is not None:
+                    if qid not in self._static_branch_cache:
+                        exact_cands = self.exact.search(q_text, top_k=10) if self.exact else []
+                        bm25_cands = self.bm25.search(q_text, top_k=max(80, self.candidate_k)) if self.bm25 else []
+                        pyvi_cands = self.bm25_pyvi.search(q_text, top_k=max(80, self.candidate_k)) if self.bm25_pyvi else []
+                        dense_cands = self.dense.retrieve(q_text, top_k=max(80, self.candidate_k), q_emb=q_emb) if self.dense else []
+                        self._static_branch_cache[qid] = {
+                            "exact": exact_cands,
+                            "bm25": bm25_cands,
+                            "bm25_pyvi": pyvi_cands,
+                            "dense": dense_cands,
+                            "bm25_80": bm25_cands[:80],
+                            "pyvi_80": pyvi_cands[:80],
+                            "dense_80": dense_cands[:80],
+                        }
+                    cached_s = self._static_branch_cache[qid]
+                    branch_cands = {
+                        "exact": cached_s.get("exact", []),
+                        "bm25": cached_s.get("bm25", []),
+                        "bm25_pyvi": cached_s.get("bm25_pyvi", []),
+                        "dense": cached_s.get("dense", []),
+                    }
+
                 cands = hybrid_engine.search_candidates(
                     query=q_text,
                     top_k=self.candidate_k,
                     exclude_qid=str(qid),
                     q_emb=q_emb,
+                    branch_candidates=branch_cands,
                 )
                 window_items.append((qid, q_text, cands, t_q0))
 

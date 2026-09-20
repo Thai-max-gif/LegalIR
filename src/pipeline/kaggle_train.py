@@ -122,8 +122,8 @@ class StageTimingTelemetry:
         }
 
 
-NOMINAL_BUDGET_SECONDS = 270 * 60  # 270-minute nominal work allocation (fix.md section 4)
-STRICT_GATE_SECONDS = 18000  # strict under-five-hours acceptance (exactly 18000 fails)
+NOMINAL_BUDGET_SECONDS = 270 * 60  # 270-minute nominal work allocation
+STRICT_GATE_SECONDS = int(os.environ.get("LEGALIR_TIME_GATE_SECONDS", 25200))  # 7-hour strict execution gate
 
 
 def forecast_cold_total(

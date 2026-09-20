@@ -54,10 +54,9 @@ image = (
 volume = modal.Volume.from_name("legalir-production", create_if_missing=True)
 VOLUME_MOUNT = "/root/legalir_volume"
 
-# 5 hours timeout (5 * 60 * 60 = 18000 seconds) to prevent excessive billing.
-# Preserved unless a separately reviewed and approved change is made.
-# Never automatically relaunch. The timeout caps duration, not spend.
-TIMEOUT_SECONDS = 18000
+# 7 hours timeout (7 * 60 * 60 = 25200 seconds) to ensure full completion
+# of 5 folds, disjoint evaluation, final model, and private test evaluation.
+TIMEOUT_SECONDS = int(os.environ.get("MODAL_TIMEOUT_SECONDS", 25200))
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 

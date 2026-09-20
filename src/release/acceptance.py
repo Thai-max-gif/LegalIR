@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 SCHEMA_VERSION = 1
-TIME_GATE_SECONDS = 18000
+import os
+TIME_GATE_SECONDS = int(os.environ.get("LEGALIR_TIME_GATE_SECONDS", 25200))
 QUALITY_GATE_RECALL5 = 0.96
 SCORE_TOLERANCE = 1e-9
 

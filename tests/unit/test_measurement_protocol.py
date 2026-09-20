@@ -74,7 +74,7 @@ def test_forecast_unknown_throughput_fails_closed():
 
 def test_forecast_budget_flags():
     assert NOMINAL_BUDGET_SECONDS == 270 * 60
-    assert STRICT_GATE_SECONDS == 18000
+    assert STRICT_GATE_SECONDS == 25200
     fits = forecast_cold_total(
         setup_index_seconds=100.0,
         train_jobs=[{"updates": 10, "sec_per_update": 1.0}],

@@ -229,18 +229,21 @@ def build_training_pairs(
             dense_80 = cached_static.get("dense_80", dense_cands)
         else:
             exact_cands = exact.search(q_text, top_k=10) if exact else []
-            bm25_80 = bm25.search(q_text, top_k=80) if bm25 else []
-            bm25_cands = bm25_80[:50]
-            pyvi_80 = bm25_pyvi.search(q_text, top_k=80) if bm25_pyvi else []
-            pyvi_cands = pyvi_80[:50]
-            dense_80 = dense.retrieve(q_text, top_k=80, q_emb=q_emb) if dense else []
-            dense_cands = dense_80[:50]
+            bm25_full = bm25.search(q_text, top_k=150) if bm25 else []
+            bm25_80 = bm25_full[:80]
+            bm25_cands = bm25_full[:50]
+            pyvi_full = bm25_pyvi.search(q_text, top_k=150) if bm25_pyvi else []
+            pyvi_80 = pyvi_full[:80]
+            pyvi_cands = pyvi_full[:50]
+            dense_full = dense.retrieve(q_text, top_k=150, q_emb=q_emb) if dense else []
+            dense_80 = dense_full[:80]
+            dense_cands = dense_full[:50]
             if static_branch_cache is not None:
                 static_branch_cache[qid] = {
                     "exact": exact_cands,
-                    "bm25": bm25_cands,
-                    "bm25_pyvi": pyvi_cands,
-                    "dense": dense_cands,
+                    "bm25": bm25_full,
+                    "bm25_pyvi": pyvi_full,
+                    "dense": dense_full,
                     "bm25_80": bm25_80,
                     "pyvi_80": pyvi_80,
                     "dense_80": dense_80,

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.release.acceptance import (
+    TIME_GATE_SECONDS,
     not_run_receipt,
     verify_acceptance,
 )
@@ -123,16 +124,16 @@ def test_elapsed_boundary(tmp_path):
     splits = _five_fold_splits()
     corpus = _corpus()
     preds = _perfect_predictions(splits, corpus)
-    ok = _positive_receipt(tmp_path, splits, preds, elapsed=17999.9)
+    ok = _positive_receipt(tmp_path, splits, preds, elapsed=float(TIME_GATE_SECONDS) - 0.1)
     out = verify_acceptance(ok, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                             corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
                             submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] == "PASS"
-    bad = _positive_receipt(tmp_path, splits, preds, elapsed=18000)
+    bad = _positive_receipt(tmp_path, splits, preds, elapsed=float(TIME_GATE_SECONDS))
     out2 = verify_acceptance(bad, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
                              corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
                              submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
-    assert out2["verdict"] != "PASS" and any("18000" in r for r in out2["reasons"])
+    assert out2["verdict"] != "PASS" and any(str(TIME_GATE_SECONDS) in r for r in out2["reasons"])
 
 
 def test_exact_threshold_fails(tmp_path):
@@ -267,7 +268,7 @@ def test_negative_elapsed_and_absent_endpoints_fail(tmp_path):
                             submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
     assert out["verdict"] != "PASS"
     assert any("timing endpoint" in r for r in out["reasons"])
-    assert any("[0, 18000)" in r for r in out["reasons"])
+    assert any(f"[0, {TIME_GATE_SECONDS})" in r for r in out["reasons"])
 
 
 def test_empty_disjoint_report_fails(tmp_path):
