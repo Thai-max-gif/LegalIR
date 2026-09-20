@@ -455,7 +455,7 @@ def run_a100_production_gate(
                 reranker_config_path=str(reranker_config_path) if reranker_config_path else str(REPO_ROOT / "configs/experiments/reranker_lora.yaml"),
                 allow_nonstandard_production_devices=allow_non_a100,
             )
-        print(f"[+] Pipeline completed with status: {res.status}", flush=True)
+        print(f"[+] Pipeline completed with status: {getattr(res, 'status', getattr(res, 'is_valid', 'COMPLETED'))}", flush=True)
         # run_kaggle_pipeline writes submissions/submission.zip; mirror to output root
         # expected by validation, checksums, HF upload, and notebook Cell 5.
         nested_zip = output_dir / "submissions" / "submission.zip"

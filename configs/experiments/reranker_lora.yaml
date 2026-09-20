@@ -2,6 +2,7 @@ experiment: "reranker_lora"
 base_model_name: "BAAI/bge-reranker-v2-m3"
 output_dir: "artifacts/local/training/checkpoints"
 loss_type: "bce"
+pos_weight: 4.0
 use_lora: true
 lora:
   r: 8
@@ -17,7 +18,7 @@ batch_size: 8
 # untouched). Pairs are scored independently; larger values only reduce
 # per-forward overhead. OOM fallback still halves automatically.
 inference_batch_size: 64
-rerank_k: 80
+rerank_k: 100
 gradient_accumulation_steps: 2
 max_steps: 250
 warmup_ratio: 0.1

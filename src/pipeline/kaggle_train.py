@@ -378,6 +378,7 @@ class KaggleRunResult:
     execution_time_seconds: float
     artifacts_dir: Path
     metadata: dict[str, Any] = field(default_factory=dict)
+    status: str = "COMPLETED"
 
 
 def get_process_rss_mb() -> float:
