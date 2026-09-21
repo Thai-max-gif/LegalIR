@@ -72,6 +72,10 @@ def main(argv=None) -> int:
     env = os.environ.copy()
     env.update(LEGALIR_COMMIT_SHA=sha, MODAL_TIMEOUT_SECONDS=str(timeout),
                LEGALIR_TIME_GATE_SECONDS=str(timeout))
+    # Windows console defaults to cp1252 and crashes Modal CLI progress
+    # output (U+2713); force UTF-8 for the dispatch subprocess only.
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     if args.bypass_t4_gate:
         env["LEGALIR_BYPASS_T4_GATE"] = "1"
     command = [sys.executable, "-m", "modal", "run", "--profile", args.profile,
