@@ -20,6 +20,13 @@ class PointwiseBCELoss(nn.Module):
         """
         logits = logits.view(-1).float()
         labels = labels.view(-1).float()
+        # The loss module itself is never .to(device) by the trainer, so the
+        # CPU-created pos_weight must follow the logits device here (GPU runs
+        # crashed with cuda:0 vs cpu mismatch otherwise).
+        pos_weight = self.loss_fn.pos_weight
+        if pos_weight is not None and pos_weight.device != logits.device:
+            pos_weight = pos_weight.to(logits.device)
+            self.loss_fn.pos_weight = pos_weight
         return self.loss_fn(logits, labels)
 
 
