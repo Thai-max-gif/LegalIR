@@ -15,20 +15,21 @@ Reviewed 2026-09-20. Production execution guide for LegalIR Task 1 on Modal A100
 
 ```bash
 # Private Round Production Execution (Detached, Recommended):
-LEGALIR_TEST_PHASE=private bash scripts/modal/run_modal_cli.sh --detach --hf-allow-public-repo
+bash scripts/modal/run_modal_cli.sh --detach --hf-allow-public-repo --private
 
 # Public Round Validation (Detached):
 bash scripts/modal/run_modal_cli.sh --detach --hf-allow-public-repo
 ```
 
 `--detach` is recommended so the remote container runs independently of the local machine's network connection or sleep state.
+`--private` ensures fail-closed private test query evaluation (exactly 2,080 queries with 5 unique valid corpus documents).
 
 The wrapper rejects dirty working trees, checks SHA/provenance locally before dispatch, then the remote path repeats checkout/provenance, HF access checks, canonical dataset validation, and training.
 
 ### Resources, Lifetime, and Persistence
 
 - **Allocated Hardware**: 1 × NVIDIA A100-SXM4-40GB GPU, 8 dedicated vCPUs (`cpu=8.0`), and 32 GiB host RAM (`memory=32768`).
-- **Timeout**: `18000` seconds (5.0 hours). The optimized cold pipeline finishes in ~2.0–2.5 hours.
+- **Timeout**: `25200` seconds (7.0 hours). Full 5-fold OOF + document-disjoint + final training and private inference finishes comfortably within this window.
 - **Volume Mount**: `/root/legalir_volume/<sha>/attempts/<uuid>/` on persistent Volume `legalir-production`.
 - **Output Artifacts**: Checkpoints, `submission.zip`, logs, and `recovery.tar.gz` are written directly to the persistent Volume.
 

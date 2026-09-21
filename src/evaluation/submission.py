@@ -31,6 +31,7 @@ def validate_submission(
     test_json: str | Path | None = None,
     data_dir: str | Path | None = None,
     raise_on_error: bool | None = None,
+    exact_answer_count: int | None = None,
 ) -> dict[str, Any]:
     """Validate submission structure against competition rules.
 
@@ -98,7 +99,13 @@ def validate_submission(
                 raise ValueError(msg)
             continue
 
-        if not (1 <= len(answer) <= 5):
+        if exact_answer_count is not None:
+            if len(answer) != exact_answer_count:
+                msg = f"Query {qid} answer length must be exactly {exact_answer_count}, got {len(answer)}"
+                errors.append(msg)
+                if should_raise:
+                    raise ValueError(msg)
+        elif not (1 <= len(answer) <= 5):
             msg = f"Query {qid} answer length must be between 1 to 5, got {len(answer)}"
             errors.append(msg)
             if should_raise:

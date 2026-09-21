@@ -20,12 +20,12 @@
   },
   "gates": {
     "kaggle_t4x2": {
-      "report_sha256": "de842cf198f5e5320cbb84eb9130e46e4d8db3606cb45f3ba84b80248f2cfa44",
+      "report_sha256": "f9a3a2010cb283a37d133fad892b8a614e7b8a85674c0bdf86219a47fef48124",
       "verdict": "PASS"
     }
   },
-  "git_sha": "180b15ed3e8124a6f3d1f3dc4b909c515bc8e72a",
-  "run_id": "task1-20260921-180b15e",
+  "git_sha": "4e1e60a6c34a4d8024346a6575af21bab2f8ac71",
+  "run_id": "task1-20260921-4e1e60a",
   "runtime_profile": "colab_a100",
   "schema_version": 3
 }
