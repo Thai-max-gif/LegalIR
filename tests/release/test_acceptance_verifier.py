@@ -153,6 +153,36 @@ def test_exact_threshold_fails(tmp_path):
     assert out["verdict"] != "PASS" and any("strictly above" in r for r in out["reasons"])
 
 
+def test_empty_training_jobs_and_placeholder_folds_fail(tmp_path):
+    # fix.md F8: training_jobs=[] with per_fold=[{}]*5 must never PASS.
+    splits = _five_fold_splits()
+    corpus = _corpus()
+    preds = _perfect_predictions(splits, corpus)
+    receipt = _positive_receipt(tmp_path, splits, preds)
+    receipt["training_jobs"] = []
+    receipt["per_fold"] = [{}] * 5
+    out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
+                            corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
+    assert out["verdict"] != "PASS"
+    assert any("training_jobs" in r for r in out["reasons"])
+    assert any("per_fold" in r for r in out["reasons"])
+
+
+def test_duplicate_fold_copies_fail(tmp_path):
+    # fix.md F8: five copies of one fold must not PASS as five-fold evidence.
+    fold = {"train_query_ids": [], "val_query_ids": ["q0", "q1"]}
+    splits = [dict(fold) for _ in range(5)]
+    corpus = _corpus()
+    preds = {q: {"answer": [f"{q}-gold", f"{q}-neg", "d1", "d2", "d3"]} for q in ("q0", "q1")}
+    receipt = _positive_receipt(tmp_path, splits, preds)
+    out = verify_acceptance(receipt, oof_predictions=preds, qrels=_qrels_for(splits), splits=splits,
+                            corpus_doc_ids=set(corpus), disjoint_report=_disjoint_report(),
+                            submission=_submission_for(splits, corpus), artifacts_dir=tmp_path / "artifacts")
+    assert out["verdict"] != "PASS"
+    assert any("distinct" in r or "population" in r for r in out["reasons"])
+
+
 def test_missing_query_fails(tmp_path):
     splits = _five_fold_splits()
     corpus = _corpus()

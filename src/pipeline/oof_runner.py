@@ -920,7 +920,6 @@ class OOFRunner:
                 base_m_name = self.reranker_model if self.reranker_model != "mock" else None
 
                 t_tr0 = time.time()
-<<<<<<< HEAD
                 with _honest_fold_training():
                     train_report = train_reranker(
                         pairs_file=pairs_dir / "reranker_pairs.parquet",
@@ -933,22 +932,8 @@ class OOFRunner:
                         precision=self.precision,
                         num_workers=self.num_workers,
                         enforce_full_coverage_steps=not self.smoke,
+                        allow_warm_start=False,
                     )
-=======
-                train_report = train_reranker(
-                    pairs_file=pairs_dir / "reranker_pairs.parquet",
-                    config_path=reranker_cfg,
-                    output_dir=adapter_dir,
-                    fold=f_idx,
-                    base_model_name=base_m_name,
-                    max_steps=5 if self.smoke else None,
-                    device=self.reranker_device,
-                    precision=self.precision,
-                    num_workers=self.num_workers,
-                    enforce_full_coverage_steps=not self.smoke,
-                    allow_warm_start=False,
-                )
->>>>>>> bc8ee6abbba5dd51430d70ac5677768eaf4b8f97
                 train_sec = time.time() - t_tr0
                 opt_steps = int(train_report.get("optimizer_steps", train_report.get("global_steps", 0)))
 
@@ -1405,7 +1390,6 @@ class OOFRunner:
             base_m_name = self.reranker_model if self.reranker_model != "mock" else None
 
             t_dj_tr0 = time.time()
-<<<<<<< HEAD
             with _honest_fold_training():
                 dj_train_report = train_reranker(
                     pairs_file=pairs_dir / "reranker_pairs.parquet",
@@ -1417,21 +1401,8 @@ class OOFRunner:
                     precision=self.precision,
                     num_workers=self.num_workers,
                     enforce_full_coverage_steps=not self.smoke,
+                    allow_warm_start=False,
                 )
-=======
-            dj_train_report = train_reranker(
-                pairs_file=pairs_dir / "reranker_pairs.parquet",
-                config_path=reranker_cfg,
-                output_dir=doc_disjoint_adapter_dir,
-                base_model_name=base_m_name,
-                max_steps=5 if self.smoke else None,
-                device=self.reranker_device,
-                precision=self.precision,
-                num_workers=self.num_workers,
-                enforce_full_coverage_steps=not self.smoke,
-                allow_warm_start=False,
-            )
->>>>>>> bc8ee6abbba5dd51430d70ac5677768eaf4b8f97
             dj_train_sec = time.time() - t_dj_tr0
             dj_opt_steps = int(dj_train_report.get("optimizer_steps", dj_train_report.get("global_steps", 0)))
 

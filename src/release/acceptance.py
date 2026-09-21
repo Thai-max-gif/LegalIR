@@ -277,10 +277,59 @@ def verify_acceptance(
     elif recomputed_r5 is not None and claimed_r5 is None:
         fail("receipt omits claimed pooled_oof_recall@5")
 
-    # Per-fold counts/scores present for all five folds.
+    # Per-fold counts/scores present for all five folds, each entry genuine
+    # (empty-dict placeholders must never pass) with distinct fold ids whose
+    # counts sum to the expected population (duplicate-fold copies fail here).
     per_fold_receipt = receipt.get("per_fold") or []
     if len(per_fold_receipt) != 5:
         fail(f"per_fold must cover five folds (got {len(per_fold_receipt)})")
+    else:
+        _fold_ids: list[int] = []
+        _fold_count_sum = 0
+        for _idx, _entry in enumerate(per_fold_receipt):
+            if not isinstance(_entry, Mapping):
+                fail(f"per_fold[{_idx}] is not an object")
+                continue
+            _fid = _entry.get("fold")
+            _cnt = _entry.get("count")
+            _r5 = _entry.get("recall@5")
+            if isinstance(_fid, bool) or not isinstance(_fid, (int, float)):
+                fail(f"per_fold[{_idx}] has no numeric fold id")
+            else:
+                _fold_ids.append(int(_fid))
+            if isinstance(_cnt, bool) or not isinstance(_cnt, (int, float)) or int(_cnt) <= 0:
+                fail(f"per_fold[{_idx}] has no positive query count")
+            else:
+                _fold_count_sum += int(_cnt)
+            if isinstance(_r5, bool) or not isinstance(_r5, (int, float)) or not (0.0 <= float(_r5) <= 1.0):
+                fail(f"per_fold[{_idx}] has no valid recall@5 in [0, 1]")
+        if len(set(_fold_ids)) != 5:
+            fail(f"per_fold fold ids must be five distinct values (got {_fold_ids})")
+        if expected_ids and _fold_count_sum != len(expected_ids):
+            fail(f"per_fold query total {_fold_count_sum} does not match expected population {len(expected_ids)}")
+
+    # Training jobs must be evidenced: non-empty, distinct job ids, each with
+    # measured positive updates. An empty job list (or placeholder entries)
+    # can never support a five-fold + final training claim.
+    _jobs = receipt.get("training_jobs") or []
+    if not isinstance(_jobs, list) or not _jobs:
+        fail("training_jobs is absent or empty")
+    else:
+        _job_ids: list[str] = []
+        for _jdx, _job in enumerate(_jobs):
+            if not isinstance(_job, Mapping):
+                fail(f"training_jobs[{_jdx}] is not an object")
+                continue
+            _jid = _job.get("job")
+            _upd = _job.get("updates")
+            if not isinstance(_jid, str) or not _jid.strip():
+                fail(f"training_jobs[{_jdx}] has no job id")
+            else:
+                _job_ids.append(_jid.strip())
+            if isinstance(_upd, bool) or not isinstance(_upd, (int, float)) or int(_upd) <= 0:
+                fail(f"training_jobs[{_jdx}] has no positive update count")
+        if len(set(_job_ids)) != len(_job_ids):
+            fail(f"training_jobs job ids must be distinct (got {_job_ids})")
 
     # --- Timing endpoints must exist; elapsed must be a finite non-negative
     # duration strictly under the gate (negative/absent can never pass) ---
