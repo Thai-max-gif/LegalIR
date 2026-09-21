@@ -2079,6 +2079,7 @@ def run_kaggle_pipeline(
             precision=_prec_norm,
             num_workers=runtime_num_workers,
             enforce_full_coverage_steps=is_full,
+            allow_warm_start=is_full,
         )
         final_training_time = max(0.001, time.perf_counter() - t_tr0)
         stage_timings.record("final_reranker_training", elapsed_seconds=final_training_time, cache_hit=False)
@@ -2224,7 +2225,12 @@ def run_kaggle_pipeline(
         assert set(predictions.keys()) == expected_qids, f"Prediction keys mismatch with official public keys: missing {len(expected_qids - set(predictions.keys()))}, extra {len(set(predictions.keys()) - expected_qids)}"
 
     official_doc_ids = set(df_docs["doc_id"].astype(str)) if "doc_id" in df_docs.columns else None
-    val_res = validate_submission(sub_json, expected_qids=expected_qids, corpus_doc_ids=official_doc_ids)
+    val_res = validate_submission(
+        sub_json,
+        expected_qids=expected_qids,
+        corpus_doc_ids=official_doc_ids,
+        exact_answer_count=5 if is_full else None,
+    )
     zip_val_res = validate_submission_zip(sub_zip)
 
     is_submission_valid = bool(val_res.get("is_valid") and zip_val_res.get("is_valid"))

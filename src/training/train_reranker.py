@@ -45,6 +45,7 @@ def train_reranker(
     precision: str | None = None,
     num_workers: int | None = None,
     enforce_full_coverage_steps: bool = True,
+    allow_warm_start: bool = False,
 ) -> dict[str, Any]:
     """
     Supervised Cross-Encoder fine-tuning with PEFT LoRA, verified weight updates,
@@ -76,6 +77,12 @@ def train_reranker(
         cfg["precision"] = precision
     if num_workers is not None:
         cfg["num_workers"] = max(0, int(num_workers))
+
+    # Strict isolation: folds must never warm-start from a global 7,000-query adapter
+    if fold is not None:
+        cfg["allow_warm_start"] = False
+    else:
+        cfg["allow_warm_start"] = bool(allow_warm_start)
 
     resolved_device = resolve_device(device if device is not None else cfg.get("device", "auto"))
 

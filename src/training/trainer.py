@@ -459,16 +459,18 @@ def setup_peft_model(
     lora_dropout: float = 0.05,
     target_modules: list[str] | None = None,
     pretrained_adapter: str | None = None,
+    allow_warm_start: bool = False,
 ) -> tuple[nn.Module, dict[str, Any]]:
     """
     Applies PEFT LoRA to the model with verified target module inspection.
-    If pretrained_adapter is provided, loads the existing adapter with is_trainable=True
-    for continual fine-tuning (warm start).
+    If pretrained_adapter is provided and allow_warm_start=True, loads the existing adapter
+    with is_trainable=True for continual fine-tuning (warm start).
+    Fails closed: allow_warm_start defaults to False to prevent fold/disjoint leakage.
     """
     from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 
     # Check if warm-start adapter is requested and applicable
-    if pretrained_adapter:
+    if pretrained_adapter and allow_warm_start:
         model_hidden = getattr(getattr(model, "config", None), "hidden_size", 0)
         # Only attach real HF adapter if model is full-sized (not a tiny mock BERT)
         if model_hidden >= 256:
@@ -628,6 +630,7 @@ class RerankerTrainer:
         use_lora = self.config.get("use_lora", True)
         self.peft_meta: dict[str, Any] = {}
         if use_lora:
+            allow_warm = bool(self.config.get("allow_warm_start", False))
             pretrained_adapter = (
                 self.config.get("pretrained_lora_path")
                 or self.config.get("pretrained_adapter_path")
@@ -644,6 +647,7 @@ class RerankerTrainer:
                 lora_dropout=lora_cfg.get("lora_dropout", self.config.get("lora_dropout", 0.05)),
                 target_modules=lora_cfg.get("target_modules", self.config.get("target_modules", None)),
                 pretrained_adapter=str(pretrained_adapter).strip() if pretrained_adapter else None,
+                allow_warm_start=allow_warm,
             )
         else:
             self.model = model
@@ -907,6 +911,7 @@ class RerankerTrainer:
             "val_metrics": val_metrics,
             "loss_type": self.loss_type,
             "device": str(self.device),
+            "warm_start": bool(self.peft_meta.get("warm_start", False)),
         }
 
         # Save checkpoint if output_dir provided

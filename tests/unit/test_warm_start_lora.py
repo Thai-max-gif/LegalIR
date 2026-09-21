@@ -78,6 +78,7 @@ def test_setup_peft_model_local_adapter_save_and_reload(tmp_path: Path, tiny_ber
     reloaded_model, reloaded_meta = setup_peft_model(
         model=model,
         pretrained_adapter=str(save_dir),
+        allow_warm_start=True,
     )
     assert reloaded_meta.get("warm_start") is True
     assert reloaded_meta["trainable_params"] > 0

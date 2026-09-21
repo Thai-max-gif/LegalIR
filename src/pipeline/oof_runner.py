@@ -907,6 +907,7 @@ class OOFRunner:
                     precision=self.precision,
                     num_workers=self.num_workers,
                     enforce_full_coverage_steps=not self.smoke,
+                    allow_warm_start=False,
                 )
                 train_sec = time.time() - t_tr0
                 opt_steps = int(train_report.get("optimizer_steps", train_report.get("global_steps", 0)))
@@ -1374,6 +1375,7 @@ class OOFRunner:
                 precision=self.precision,
                 num_workers=self.num_workers,
                 enforce_full_coverage_steps=not self.smoke,
+                allow_warm_start=False,
             )
             dj_train_sec = time.time() - t_dj_tr0
             dj_opt_steps = int(dj_train_report.get("optimizer_steps", dj_train_report.get("global_steps", 0)))
