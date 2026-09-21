@@ -54,9 +54,23 @@ image = (
 volume = modal.Volume.from_name("legalir-production", create_if_missing=True)
 VOLUME_MOUNT = "/root/legalir_volume"
 
-# 7 hours timeout (7 * 60 * 60 = 25200 seconds) to ensure full completion
-# of 5 folds, disjoint evaluation, final model, and private test evaluation.
+# Seven-hour execution ceiling, not a completion guarantee.
+# NOTE: timeout-pair consistency is validated in main() and
+# run_production_training(), not at import time, so a stale secret value
+# cannot break module import before explicit arguments override it.
 TIMEOUT_SECONDS = int(os.environ.get("MODAL_TIMEOUT_SECONDS", 25200))
+if not 1 <= TIMEOUT_SECONDS <= 86400:
+    raise ValueError("MODAL_TIMEOUT_SECONDS must be between 1 and 86400")
+
+
+def _validate_timeout_pair(modal_timeout: int, time_gate: int) -> None:
+    """Validate an explicit timeout pair before dispatch."""
+    if not 1 <= int(modal_timeout) <= 86400:
+        raise ValueError("MODAL_TIMEOUT_SECONDS must be between 1 and 86400")
+    if not 1 <= int(time_gate) <= 86400:
+        raise ValueError("time_gate_seconds must be between 1 and 86400")
+    if int(time_gate) != int(modal_timeout):
+        raise ValueError("LEGALIR_TIME_GATE_SECONDS must equal MODAL_TIMEOUT_SECONDS")
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 
@@ -135,7 +149,7 @@ def _resolve_volume_mount() -> Path:
     override = getattr(mod, "VOLUME_MOUNT", VOLUME_MOUNT) if mod is not None else VOLUME_MOUNT
     return Path(override)
 
-# NOTE: CPU/RAM are Modal defaults (no explicit cpu/memory reservation).
+# Explicit CPU/RAM reservation below.
 # Workload (~934k micro-chunks, multiple indexes, multiprocessing, repeated
 # model/index loads) has no qualified peak-RAM, CPU-availability, or
 # end-to-end completion forecast on A100. Timeout caps duration, not spend.
@@ -151,7 +165,13 @@ def _resolve_volume_mount() -> Path:
         modal.Secret.from_name("huggingface-secret")
     ]
 )
-def run_production_training(expected_sha: str, hf_allow_public_repo: bool = False):
+def run_production_training(
+    expected_sha: str,
+    hf_allow_public_repo: bool = False,
+    test_phase: str = "public",
+    time_gate_seconds: int = TIMEOUT_SECONDS,
+    bypass_t4_gate: bool = False,
+):
     """
     Executes the A100 production training pipeline within a Modal container.
     Pre-A100 hardware gate: Kaggle dual-T4 report (B1.1), strictly enforced.
@@ -165,6 +185,24 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
     training loop may still be lost on a hard kill. No resume is implied.
     """
     import sys
+
+    # Arguments cross the local/remote boundary; local shell env does not.
+    # Override stale secret values before importing modules with env constants.
+    if test_phase not in ("public", "private"):
+        raise ValueError("test_phase must be public or private")
+    if not 1 <= int(time_gate_seconds) <= 86400:
+        raise ValueError("time_gate_seconds must be between 1 and 86400")
+    os.environ["LEGALIR_TEST_PHASE"] = test_phase
+    os.environ["LEGALIR_TIME_GATE_SECONDS"] = str(int(time_gate_seconds))
+    if bypass_t4_gate:
+        os.environ["LEGALIR_BYPASS_T4_GATE"] = "1"
+        print("[!] OPERATOR BYPASS forwarded to remote: Kaggle T4 lineage/report checks skipped.", flush=True)
+    if int(time_gate_seconds) != int(TIMEOUT_SECONDS):
+        print(
+            f"[!] Remote acceptance ceiling ({int(time_gate_seconds)}s) differs from "
+            f"remote function timeout ({int(TIMEOUT_SECONDS)}s); acceptance uses the explicit argument.",
+            flush=True,
+        )
 
     # Validate SHA before constructing any paths. Fail closed on bad input.
     sha = str(expected_sha or "").strip()
@@ -344,8 +382,15 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
     return _attempt_report
 
 @app.local_entrypoint()
-def main(hf_allow_public_repo: bool = False, private: bool = False):
+def main(hf_allow_public_repo: bool = False, private: bool = False, bypass_t4_gate: bool = False):
     import sys
+    _validate_timeout_pair(
+        TIMEOUT_SECONDS,
+        int(os.environ.get("LEGALIR_TIME_GATE_SECONDS", TIMEOUT_SECONDS)),
+    )
+    if bypass_t4_gate:
+        os.environ["LEGALIR_BYPASS_T4_GATE"] = "1"
+        print("[!] OPERATOR BYPASS: Kaggle T4 lineage/report checks skipped for this dispatch.", flush=True)
     # Try to grab the SHA from local git if we are in the repo, or from env
     expected_sha = os.environ.get("LEGALIR_COMMIT_SHA")
     if not expected_sha:
@@ -378,18 +423,24 @@ def main(hf_allow_public_repo: bool = False, private: bool = False):
 
     print(f"[*] Dispatching A100 training job to Modal for commit: {expected_sha}")
     print(f"[*] Evaluation Phase: {test_phase.upper()} ({'2,080 queries' if test_phase == 'private' else '1,000 queries'})")
-    print("[*] This process will run remotely on an A100 GPU (8 vCPU, 32GB RAM) and automatically terminate after 5 hours max.")
+    print(f"[*] A100 GPU, 8 vCPU, 32 GiB RAM; execution timeout and acceptance ceiling: {TIMEOUT_SECONDS}s ({TIMEOUT_SECONDS / 3600:g}h).")
     print("[*] Durable outputs use /root/legalir_volume/<sha>/attempts/<id>/ on the 'legalir-production' Volume.")
     print("[*] Supervision: default `modal run` is ATTACHED — client disconnect terminates")
     print("    remote tasks even with a persistent Volume. Keep the client connected (stable")
     print("    network, machine awake, tmux/screen) until the remote job returns, or dispatch")
     print("    via the wrapper with explicit `--detach` plus app-ID tracking, log monitoring,")
     print("    and an explicit stop procedure. Independently confirm app termination.")
-    print("[*] NOTE: 5h caps duration, not spend — retries/re-runs bill extra. No checkpoint-resume:")
+    print("[*] NOTE: timeout caps execution duration, not total spend — retries/re-runs bill extra. No checkpoint-resume:")
     print("    a timeout kill still requires a full re-run (Volume holds forensics only).")
     print("[*] Ensure you have created 'kaggle-secret' and 'huggingface-secret' in the Modal dashboard!")
     if hf_allow_public_repo:
         print("[!] OPERATOR OVERRIDE: public HF repos permitted for this launch.", flush=True)
 
-    result = run_production_training.remote(expected_sha, hf_allow_public_repo=hf_allow_public_repo)
+    result = run_production_training.remote(
+        expected_sha,
+        hf_allow_public_repo=hf_allow_public_repo,
+        test_phase=test_phase,
+        time_gate_seconds=TIMEOUT_SECONDS,
+        bypass_t4_gate=bypass_t4_gate,
+    )
     print(f"[*] Remote job finished with result: {result}")

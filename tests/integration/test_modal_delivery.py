@@ -461,9 +461,10 @@ def test_remote_dependency_contract():
 def test_modal_forwards_explicit_consent(launcher, monkeypatch):
     forwarded = {}
 
-    def fake_remote(sha, hf_allow_public_repo=False):
+    def fake_remote(sha, hf_allow_public_repo=False, **kwargs):
         forwarded["sha"] = sha
         forwarded["consent"] = hf_allow_public_repo
+        forwarded.update(kwargs)
         return {"ok": True}
 
     monkeypatch.setattr(launcher.run_production_training, "remote", fake_remote)
@@ -477,3 +478,59 @@ def test_modal_forwards_explicit_consent(launcher, monkeypatch):
     assert forwarded["sha"] == VALID_SHA
     launcher.main(hf_allow_public_repo=False)
     assert forwarded["consent"] is False
+    launcher.main(private=True)
+    assert forwarded["test_phase"] == "private"
+    assert forwarded["time_gate_seconds"] == launcher.TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("phase", ["public", "private"])
+def test_remote_phase_and_timeout_override_secret_env(launcher, offline_stubs, monkeypatch, phase):
+    import os
+    import scripts.colab.bootstrap as boot
+
+    monkeypatch.setenv("LEGALIR_TEST_PHASE", "private" if phase == "public" else "public")
+    monkeypatch.setenv("LEGALIR_TIME_GATE_SECONDS", "18000")
+    observed = {}
+
+    def verify(*args, **kwargs):
+        observed["phase"] = os.environ["LEGALIR_TEST_PHASE"]
+        observed["timeout"] = os.environ["LEGALIR_TIME_GATE_SECONDS"]
+
+    monkeypatch.setattr(boot, "verify_launch", verify)
+    launcher.run_production_training(VALID_SHA, test_phase=phase, time_gate_seconds=25200)
+    assert observed == {"phase": phase, "timeout": "25200"}
+
+
+def test_remote_rejects_invalid_phase_before_attempt(launcher, offline_stubs):
+    with pytest.raises(ValueError, match="test_phase"):
+        launcher.run_production_training(VALID_SHA, test_phase="typo")
+    assert not list(Path(launcher.VOLUME_MOUNT).iterdir())
+
+
+def test_import_survives_stale_time_gate_env(monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setenv("LEGALIR_TIME_GATE_SECONDS", "18000")
+    monkeypatch.delenv("MODAL_TIMEOUT_SECONDS", raising=False)
+    for mod in ("scripts.modal.run_modal_a100", "scripts.modal"):
+        sys.modules.pop(mod, None)
+    import scripts.modal.run_modal_a100 as m
+
+    importlib.reload(m)
+    assert m.TIMEOUT_SECONDS == 25200
+
+
+def test_bypass_forwarded_to_remote_env(launcher, offline_stubs, monkeypatch):
+    import os
+    import scripts.colab.bootstrap as boot
+
+    monkeypatch.delenv("LEGALIR_BYPASS_T4_GATE", raising=False)
+    observed = {}
+
+    def verify(*args, **kwargs):
+        observed["bypass"] = os.environ.get("LEGALIR_BYPASS_T4_GATE")
+
+    monkeypatch.setattr(boot, "verify_launch", verify)
+    launcher.run_production_training(VALID_SHA, bypass_t4_gate=True)
+    assert observed["bypass"] == "1"
