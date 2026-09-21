@@ -636,6 +636,14 @@ class RerankerTrainer:
             )
             if str(pretrained_adapter).strip().lower() in ("auto", "latest", "true", "1"):
                 pretrained_adapter = os.environ.get("HF_REPO_ID", "dangphuc2109/legalir-task1-reranker")
+            # Honest held-out training: folds/disjoint must never warm-start
+            # from an adapter that has seen held-out labels (e.g. a final
+            # adapter trained on all queries). Callers set
+            # LEGALIR_DISABLE_WARM_START=1 around OOF/disjoint training; the
+            # dedicated final model keeps warm-start enabled.
+            if pretrained_adapter and os.environ.get("LEGALIR_DISABLE_WARM_START", "").strip() == "1":
+                print("[*] Warm-start disabled by LEGALIR_DISABLE_WARM_START=1; using clean LoRA init.", flush=True)
+                pretrained_adapter = None
             lora_cfg = self.config.get("lora", {})
             self.model, self.peft_meta = setup_peft_model(
                 model=model,

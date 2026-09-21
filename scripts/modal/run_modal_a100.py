@@ -118,7 +118,12 @@ def _resolve_repo_dir() -> Path:
 
 def _resolve_dataset_dir() -> Path:
     # Test hook: LEGALIR_MODAL_DATASET_DIR overrides /root/kaggle_dataset.
-    return Path(os.environ.get("LEGALIR_MODAL_DATASET_DIR", "/root/kaggle_dataset"))
+    # LEGALIR_DATASET_DIR persists the canonical dataset across attempts
+    # (e.g. a Volume path) so retries skip the ~616MB re-download/unzip.
+    return Path(
+        os.environ.get("LEGALIR_DATASET_DIR")
+        or os.environ.get("LEGALIR_MODAL_DATASET_DIR", "/root/kaggle_dataset")
+    )
 
 
 def _resolve_volume_mount() -> Path:

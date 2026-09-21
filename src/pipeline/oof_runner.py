@@ -55,6 +55,30 @@ from src.ranking.fusion import ReciprocalRankFusion
 _OOF_FIXED_RRF = ReciprocalRankFusion()
 
 
+class _honest_fold_training:
+    """Force clean LoRA init for OOF/disjoint training jobs.
+
+    Warm-starting from an adapter that has seen held-out labels (e.g. a final
+    adapter trained on all queries) would contaminate honest evaluation, so
+    fold and document-disjoint training run with LEGALIR_DISABLE_WARM_START=1
+    (recognized by RerankerTrainer). The dedicated final model is trained
+    outside this guard and keeps warm-start enabled.
+    """
+
+    _FLAG = "LEGALIR_DISABLE_WARM_START"
+
+    def __enter__(self) -> None:
+        self._previous = os.environ.get(self._FLAG)
+        os.environ[self._FLAG] = "1"
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if self._previous is None:
+            os.environ.pop(self._FLAG, None)
+        else:
+            os.environ[self._FLAG] = self._previous
+        return False
+
+
 def _sha256_sorted_ids(ids) -> str:
     """Stable SHA-256 over sorted string IDs for resume-identity checks."""
     joined = ",".join(sorted(str(x) for x in ids))
@@ -896,18 +920,19 @@ class OOFRunner:
                 base_m_name = self.reranker_model if self.reranker_model != "mock" else None
 
                 t_tr0 = time.time()
-                train_report = train_reranker(
-                    pairs_file=pairs_dir / "reranker_pairs.parquet",
-                    config_path=reranker_cfg,
-                    output_dir=adapter_dir,
-                    fold=f_idx,
-                    base_model_name=base_m_name,
-                    max_steps=5 if self.smoke else None,
-                    device=self.reranker_device,
-                    precision=self.precision,
-                    num_workers=self.num_workers,
-                    enforce_full_coverage_steps=not self.smoke,
-                )
+                with _honest_fold_training():
+                    train_report = train_reranker(
+                        pairs_file=pairs_dir / "reranker_pairs.parquet",
+                        config_path=reranker_cfg,
+                        output_dir=adapter_dir,
+                        fold=f_idx,
+                        base_model_name=base_m_name,
+                        max_steps=5 if self.smoke else None,
+                        device=self.reranker_device,
+                        precision=self.precision,
+                        num_workers=self.num_workers,
+                        enforce_full_coverage_steps=not self.smoke,
+                    )
                 train_sec = time.time() - t_tr0
                 opt_steps = int(train_report.get("optimizer_steps", train_report.get("global_steps", 0)))
 
@@ -1364,17 +1389,18 @@ class OOFRunner:
             base_m_name = self.reranker_model if self.reranker_model != "mock" else None
 
             t_dj_tr0 = time.time()
-            dj_train_report = train_reranker(
-                pairs_file=pairs_dir / "reranker_pairs.parquet",
-                config_path=reranker_cfg,
-                output_dir=doc_disjoint_adapter_dir,
-                base_model_name=base_m_name,
-                max_steps=5 if self.smoke else None,
-                device=self.reranker_device,
-                precision=self.precision,
-                num_workers=self.num_workers,
-                enforce_full_coverage_steps=not self.smoke,
-            )
+            with _honest_fold_training():
+                dj_train_report = train_reranker(
+                    pairs_file=pairs_dir / "reranker_pairs.parquet",
+                    config_path=reranker_cfg,
+                    output_dir=doc_disjoint_adapter_dir,
+                    base_model_name=base_m_name,
+                    max_steps=5 if self.smoke else None,
+                    device=self.reranker_device,
+                    precision=self.precision,
+                    num_workers=self.num_workers,
+                    enforce_full_coverage_steps=not self.smoke,
+                )
             dj_train_sec = time.time() - t_dj_tr0
             dj_opt_steps = int(dj_train_report.get("optimizer_steps", dj_train_report.get("global_steps", 0)))
 

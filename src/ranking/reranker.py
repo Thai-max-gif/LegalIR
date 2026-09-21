@@ -389,6 +389,40 @@ class CrossEncoderReranker:
         if self.score_fn is not None:
             return self._score_with_callback(pairs, effective_batch_size, effective_max_length)
 
+        # Eval-only batching optimizations (no training-semantic change):
+        # 1. Deduplicate identical (query, passage) inputs: score once and
+        #    scatter the score back to every original position. Deterministic
+        #    under inference_mode; order and multiplicity are preserved.
+        # 2. Length-bucket the unique pairs by character-length proxy so each
+        #    batch pads to a similar length (padding tokens are masked, hence
+        #    score-neutral) instead of the global max.
+        norm_pairs = [(str(q), str(p)) for q, p in pairs]
+        unique_pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for key in norm_pairs:
+            if key not in seen:
+                seen.add(key)
+                unique_pairs.append(key)
+        bucket_order = sorted(
+            range(len(unique_pairs)),
+            key=lambda i: len(unique_pairs[i][0]) + len(unique_pairs[i][1]),
+        )
+        ordered_unique = [unique_pairs[i] for i in bucket_order]
+        unique_scores = self._score_unique_pairs(
+            ordered_unique, effective_batch_size, effective_max_length
+        )
+        score_by_key = {
+            unique_pairs[i]: score for i, score in zip(bucket_order, unique_scores)
+        }
+        return [score_by_key[key] for key in norm_pairs]
+
+    def _score_unique_pairs(
+        self,
+        pairs: list[tuple[str, str]],
+        effective_batch_size: int,
+        effective_max_length: int,
+    ) -> list[float]:
+
         self._load_model()
         import torch
         import contextlib
