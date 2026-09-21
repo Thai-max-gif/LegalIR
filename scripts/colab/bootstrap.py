@@ -48,10 +48,20 @@ def verify_launch(expected_sha, kaggle_report, freeze_file, repo_root=REPO_ROOT)
         raise RuntimeError(f"Kaggle T4x2 report missing: {report_path}")
     freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    # Operator bypass (explicit, logged): team-lead approved A100-only run
+    # without re-running the Kaggle T4 gate. Skips ONLY launch-gate
+    # lineage/report binding; dataset/algorithm integrity still enforced and
+    # acceptance stays independently verified. Requires
+    # LEGALIR_BYPASS_T4_GATE=1 in the environment (local + secret).
+    bypass_t4 = os.environ.get("LEGALIR_BYPASS_T4_GATE", "").strip() == "1"
+    if bypass_t4:
+        print("[!] OPERATOR BYPASS: Kaggle T4 gate lineage/report checks SKIPPED per team-lead approval.", flush=True)
+        print("[!] Acceptance/provenance remain independently verified; this bypass does not fabricate metrics.", flush=True)
+        freeze["_bypass_t4_gate"] = True
     runtime_sha = str(freeze.get("git_sha", "")).strip().lower()
     if not runtime_sha:
         raise RuntimeError("Production freeze is missing git_sha!")
-    if runtime_sha != sha.lower():
+    if not bypass_t4 and runtime_sha != sha.lower():
         # Two-commit model: release checkout may descend from the frozen runtime
         # with evidence-only diffs (gate reports, freeze, notebooks).
         from src.release.provenance import validate_runtime_release_lineage
@@ -68,6 +78,9 @@ def verify_launch(expected_sha, kaggle_report, freeze_file, repo_root=REPO_ROOT)
         raise RuntimeError("Production freeze algorithm config mismatch")
     if not freeze.get("dataset", {}).get("manifest_sha256"):
         raise RuntimeError("Production freeze is missing dataset.manifest_sha256")
+    if bypass_t4:
+        print("[!] BYPASS active: skipping Kaggle T4 report lineage/binding; dataset/algorithm integrity still enforced.", flush=True)
+        return freeze
     gate_res = verify_prior_gate_reports(
         kaggle_report=report,
         expected_sha=runtime_sha,

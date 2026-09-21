@@ -231,7 +231,7 @@ def run_production_training(expected_sha: str, hf_allow_public_repo: bool = Fals
         repo_dir = _resolve_repo_dir()
         if not repo_dir.exists():
             print(f"[*] Cloning repository into {repo_dir}...")
-            subprocess.run(["git", "clone", "https://github.com/silent9669/LegalIR.git", str(repo_dir)], check=True)
+            subprocess.run(["git", "clone", "https://github.com/Thai-max-gif/LegalIR.git", str(repo_dir)], check=True)
 
         print(f"[*] Checking out exact commit: {sha}")
         subprocess.run(["git", "fetch", "origin", sha], cwd=repo_dir, check=False)
