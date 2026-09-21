@@ -1,5 +1,6 @@
 """Offline dispatch contracts for the Windows/Linux Python entrypoint."""
 import subprocess
+import os
 
 import pytest
 
@@ -77,3 +78,58 @@ def test_default_dispatch_has_no_bypass(cli):
     cmd, kwargs = cli[0]
     assert "--bypass-t4-gate" not in cmd
     assert "LEGALIR_BYPASS_T4_GATE" not in kwargs["env"]
+
+
+@pytest.mark.parametrize("original", [None, "0"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_bypass_applied_before_preflight_and_restored(cli, monkeypatch, original, fails):
+    import scripts.colab.bootstrap as boot
+
+    if original is not None:
+        monkeypatch.setenv("LEGALIR_BYPASS_T4_GATE", original)
+
+    def verify(*args, **kwargs):
+        assert os.environ.get("LEGALIR_BYPASS_T4_GATE") == "1"
+        if fails:
+            raise RuntimeError("config mismatch")
+
+    monkeypatch.setattr(boot, "verify_launch", verify)
+    assert launch.main(["--check-only", "--bypass-t4-gate"]) == (1 if fails else 0)
+    assert os.environ.get("LEGALIR_BYPASS_T4_GATE") == original
+    assert cli == []
+
+
+def test_real_validator_bypass_still_checks_config(monkeypatch, tmp_path):
+    import json
+    from src.release.fingerprints import fingerprint_structured_config
+
+    # Real validator and JSON/hash checks; only Git subprocesses are stubbed.
+    root = tmp_path
+    config = root / "configs/algorithm/legalir_v2.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("training: {}\n", encoding="utf-8")
+    freeze_path = root / "artifacts/task1/freeze/production_freeze.json"
+    freeze_path.parent.mkdir(parents=True)
+    report = root / "artifacts/task1/gates/kaggle_t4x2_report.json"
+    report.parent.mkdir(parents=True)
+    report.write_text("{}", encoding="utf-8")
+    freeze = {"git_sha": "b" * 40,
+              "algorithm_config_sha256": fingerprint_structured_config(config),
+              "dataset": {"manifest_sha256": "fixture"}}
+    freeze_path.write_text(json.dumps(freeze), encoding="utf-8")
+    monkeypatch.setattr(launch, "REPO_ROOT", root)
+    for key in ("LEGALIR_BYPASS_T4_GATE", "LEGALIR_COMMIT_SHA",
+                "MODAL_TIMEOUT_SECONDS", "LEGALIR_TIME_GATE_SECONDS"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(subprocess, "check_output",
+                        lambda cmd, **kw: "a" * 40 if "rev-parse" in cmd else "")
+
+    def no_dispatch(*args, **kwargs):
+        pytest.fail("check-only must not dispatch")
+
+    monkeypatch.setattr(subprocess, "run", no_dispatch)
+    assert launch.main(["--check-only", "--bypass-t4-gate"]) == 0
+    assert "LEGALIR_BYPASS_T4_GATE" not in os.environ
+    freeze["algorithm_config_sha256"] = "wrong"
+    freeze_path.write_text(json.dumps(freeze), encoding="utf-8")
+    assert launch.main(["--check-only", "--bypass-t4-gate"]) == 1

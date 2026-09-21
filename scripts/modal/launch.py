@@ -43,12 +43,23 @@ def main(argv=None) -> int:
             raise ValueError("LEGALIR_TIME_GATE_SECONDS must equal MODAL_TIMEOUT_SECONDS")
         from scripts.colab.bootstrap import verify_launch
 
-        verify_launch(
-            sha,
-            REPO_ROOT / "artifacts/task1/gates/kaggle_t4x2_report.json",
-            REPO_ROOT / "artifacts/task1/freeze/production_freeze.json",
-            repo_root=REPO_ROOT,
-        )
+        # The validator runs in this process, before the Modal subprocess.
+        # Scope the explicit override so repeated calls cannot inherit it.
+        previous_bypass = os.environ.get("LEGALIR_BYPASS_T4_GATE")
+        try:
+            if args.bypass_t4_gate:
+                os.environ["LEGALIR_BYPASS_T4_GATE"] = "1"
+            verify_launch(
+                sha,
+                REPO_ROOT / "artifacts/task1/gates/kaggle_t4x2_report.json",
+                REPO_ROOT / "artifacts/task1/freeze/production_freeze.json",
+                repo_root=REPO_ROOT,
+            )
+        finally:
+            if previous_bypass is None:
+                os.environ.pop("LEGALIR_BYPASS_T4_GATE", None)
+            else:
+                os.environ["LEGALIR_BYPASS_T4_GATE"] = previous_bypass
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         print(f"[!] Launch blocked before Modal dispatch: {exc}", file=sys.stderr)
         return 1
